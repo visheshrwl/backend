@@ -1,139 +1,85 @@
 # Technical Leadership
 
-## Problem
+## What Is Technical Leadership?
 
-Technical Leadership is a fundamental component of backend engineering that directly impacts latency, throughput, and reliability at scale.
+Technical leadership is the practice of guiding engineering teams toward correct architectural decisions, setting technical direction, and developing the technical capability of the people around you. It is distinct from management: a staff engineer leads through technical influence, not organizational authority.
 
-## Why It Matters (Latency, Throughput, Cost)
+## Why It Matters
 
-Understanding technical leadership enables engineers to make informed architectural decisions backed by measurement rather than intuition. The wrong approach at scale translates directly to increased costs, user-facing latency, and operational burden.
+Poor technical leadership compounds over years:
+- Wrong architectural decisions taken early cost 10–100× more to unwind later
+- Underdeveloped engineers ship slower and make more errors
+- Missing technical standards cause inconsistent systems that are hard to operate
 
-## Mental Model
+## Core Responsibilities
 
-Technical Leadership can be understood through the lens of the systems it interacts with: the OS, the network stack, and the application layer. Each abstraction has a cost model that must be internalized.
+**Decision-making:**
+- Frame decisions with explicit trade-offs, not opinions
+- Write ADRs (Architecture Decision Records) for reversible and irreversible decisions
+- Distinguish reversible decisions (can move fast) from irreversible ones (slow down, validate)
 
-## Underlying Theory (OS / CN / DSA / Math Linkage)
+**Technical direction:**
+- Define and maintain standards in code review, testing, observability
+- Identify and address technical debt before it becomes a blocker
+- Anticipate bottlenecks 6–18 months ahead based on growth projections
 
-This topic draws on: process/thread model (Module 03), network stack (Module 04), data structures (Module 02), and queueing theory (Module 01). The cross-domain connections are what make this topic tractable at depth.
+**People development:**
+- Pair on hard problems instead of solving them alone
+- Give feedback on technical judgment, not just code correctness
+- Create stretch assignments that develop the next level's skills
 
-## Naive Approach
+## The Influence Model
 
-A straightforward implementation without considering scale, resource management, or failure modes. Works in development with small data sets and low concurrency.
-
-## Why It Fails at Scale
-
-The naive approach breaks due to: increased load revealing O(N) complexity, resource contention under concurrency, or missing failure handling causing cascading errors.
-
-## Optimized Approach
-
-The optimized approach applies systems thinking: bounded resources, explicit failure handling, metrics instrumentation, and algorithmic improvements where applicable.
-
-## Complexity Analysis
-
-| Operation | Time | Space | Notes |
-|-----------|------|-------|-------|
-| Core hot path | O(1) or O(log N) | O(N) | See implementation details |
-| Setup/teardown | O(1) | O(pool_size) | Amortized over lifetime |
-
-## Benchmark (p50, p99, CPU, Memory)
+Staff engineers lead without authority. Influence comes from:
 
 ```
-Setup: Linux, PostgreSQL 15/Redis 7, 8-core machine, same-host connections (0.5ms RTT)
-Concurrent workers: 50, Total requests: 10,000
-
-Naive:     p50=50ms    p99=200ms   CPU=30%   Memory=500MB
-Optimized: p50=5ms     p99=15ms    CPU=8%    Memory=50MB
-Improvement: 10x latency, 4x CPU, 10x memory
+Technical credibility: Track record of being right, especially on hard calls
+Clarity of communication: Can explain complex trade-offs simply
+Consistency: Same standards applied to your code and others
+Availability: Present at the moment decisions are being made
 ```
 
-## Observability (Metrics, Tracing, Logs)
+## Deciding vs Advising vs Delegating
 
-Key metrics:
-- Throughput: requests/second via Prometheus counter
-- Latency: p50/p95/p99 histograms with 1ms-1s buckets
-- Error rate: 5xx/total requests ratio
-- Resource saturation: CPU, memory, connection pool utilization
-
-Alert thresholds: latency p99 > 500ms, error rate > 1%, pool utilization > 90%.
-
-## Multi-language Implementation (Python, Go, Node.js)
-
-### Python
-
-```python
-# Production-quality implementation in Python
-# Uses async/await for I/O-bound operations
-import asyncio
-from typing import Any
-
-async def optimized_implementation(resource_pool, request: dict) -> dict:
-    async with resource_pool.acquire() as resource:
-        return await resource.process(request)
+```
+Decision type          Your role
+─────────────────────────────────────────────────────────
+Cross-team arch        Decide (with stakeholder input)
+Team-level arch        Advise + document in ADR
+Feature implementation Delegate (review output)
+Hotfix during incident Advise (support, don't take over)
 ```
 
-### Go
+## Anti-Patterns
 
-```go
-// Go implementation using goroutines and channels
-func optimizedImplementation(pool ResourcePool, req Request) (Response, error) {
-    resource, err := pool.Acquire(context.Background())
-    if err != nil {
-        return Response{}, fmt.Errorf("acquire: %w", err)
-    }
-    defer pool.Release(resource)
-    return resource.Process(req)
-}
-```
+**The Hero:** Solves every hard problem personally. Creates a single point of failure, atrophies the team.
 
-### Node.js
+**The Gatekeeper:** Blocks PRs with style preferences instead of substantive feedback. Slows team velocity without quality gain.
 
-```javascript
-// Node.js async implementation
-async function optimizedImplementation(pool, request) {
-    const resource = await pool.acquire();
-    try {
-        return await resource.process(request);
-    } finally {
-        pool.release(resource);
-    }
-}
-```
+**The Ivory Tower:** Makes architectural decisions without understanding operational reality. Designs systems nobody can run.
 
-## Trade-offs
+**The Consensus Seeker:** Waits for unanimous agreement before deciding. Optimal technical decisions are rarely popular; they need explanation, not votes.
 
-| Approach | Latency | Throughput | Complexity | Best For |
-|----------|---------|------------|------------|---------|
-| Simple | High | Low | Low | Dev/testing |
-| Pooled | Low | High | Medium | Production |
-| Distributed | Variable | Very High | High | Large scale |
+## Measuring Technical Leadership Effectiveness
 
-## Failure Modes
-
-1. **Resource exhaustion:** Unbounded resource creation causes OOM or FD limit hits. Mitigation: configure explicit limits and timeouts.
-2. **Cascading failures:** One slow dependency causes upstream timeouts to accumulate. Mitigation: circuit breakers with fast-fail.
-3. **Silent data corruption:** Missing validation allows bad data to propagate. Mitigation: validate at entry points, not just outputs.
-4. **Configuration defaults:** Library defaults are rarely production-appropriate. Always review and set explicitly.
-
-## When NOT to Use
-
-- **When scale doesn't justify complexity:** For < 100 req/s with simple workloads, simpler solutions are more maintainable.
-- **When a managed service exists:** If a cloud provider offers this as a service, evaluate whether the operational overhead of self-hosting is justified.
-- **When your team lacks expertise:** Complex systems require operational knowledge to run correctly. Factor in the learning curve.
-
-## Lab
-
-Implement the naive and optimized versions, measure the difference with the provided benchmark harness, and observe the failure modes by deliberately exhausting resources.
+| Metric | What It Measures | Target |
+|--------|-----------------|--------|
+| Incident root causes | Are the same classes of bugs recurring? | Decreasing repetition |
+| Time to onboard new engineer | Documentation and standards quality | < 2 weeks to first PR |
+| ADR count | Are decisions being documented? | ≥ 1 per significant decision |
+| p99 latency trend | Is technical quality improving? | Improving or stable |
+| Team velocity after staff eng absence | Has knowledge been transferred? | Minimal change |
 
 ## Key Takeaways
 
-1. Measure before optimizing — intuition is often wrong about where bottlenecks are.
-2. Default configurations are starting points, not production settings.
-3. Every optimization has a trade-off; understand the cost before applying it.
-4. Instrument everything from the start — retrofitting observability is harder than building it in.
-5. Failure modes are as important as happy paths — test them explicitly.
+1. Technical leadership is measured by team output, not personal output.
+2. The best technical leaders spend more time writing ADRs and reviewing designs than writing code.
+3. "Move fast" and "technical quality" are not opposites — they are directly correlated over 12+ month horizons.
+4. Your job is to raise the technical ceiling of your team, not to be the ceiling.
+5. Influence requires investment in relationships and communication, not just being technically correct.
 
 ## Related Modules
 
-- `../../07-core-backend-engineering/` — practical application of these concepts
-- `../../09-performance-engineering/01-profiling-and-benchmarking.md` — measurement methodology
-- `../../01-mathematics-for-systems/04-queueing-theory.md` — formal resource sizing
+- `./02-architecture-decision-records.md` — the primary artifact of technical decision-making
+- `./03-system-reviews.md` — how to evaluate system quality at scale
+- `../../enterprise-kit/backend-audit-checklist.md` — measurable standards for technical quality

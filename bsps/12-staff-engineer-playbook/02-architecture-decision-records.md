@@ -1,139 +1,153 @@
 # Architecture Decision Records
 
-## Problem
+## What Is an ADR?
 
-Architecture Decision Records is a fundamental component of backend engineering that directly impacts latency, throughput, and reliability at scale.
+An Architecture Decision Record (ADR) is a short document that captures a significant architectural decision: the context that necessitated it, the decision made, and the consequences of that decision.
 
-## Why It Matters (Latency, Throughput, Cost)
+ADRs are **not** design documents. They are records of decisions already made — or being finalized — including the alternatives considered and why they were rejected.
 
-Understanding architecture decision records enables engineers to make informed architectural decisions backed by measurement rather than intuition. The wrong approach at scale translates directly to increased costs, user-facing latency, and operational burden.
+## Why ADRs Matter
 
-## Mental Model
+Without ADRs:
+- New engineers spend weeks reverse-engineering why systems are built the way they are
+- "Why don't we just use X?" is asked repeatedly in every new team member's first month
+- Decisions are re-litigated from scratch when the original decision-makers leave
+- Context about constraints that no longer exist (but shaped the design) is lost
 
-Architecture Decision Records can be understood through the lens of the systems it interacts with: the OS, the network stack, and the application layer. Each abstraction has a cost model that must be internalized.
+With ADRs:
+- New engineers onboard in days, not weeks
+- Technical debt decisions are explicit and traceable
+- Trade-offs are visible to auditors, security reviewers, and future engineers
 
-## Underlying Theory (OS / CN / DSA / Math Linkage)
+## ADR Format
 
-This topic draws on: process/thread model (Module 03), network stack (Module 04), data structures (Module 02), and queueing theory (Module 01). The cross-domain connections are what make this topic tractable at depth.
+```markdown
+# ADR-{number}: {Title}
 
-## Naive Approach
+**Date:** YYYY-MM-DD
+**Status:** [Proposed | Accepted | Deprecated | Superseded by ADR-N]
+**Deciders:** {Names or roles}
 
-A straightforward implementation without considering scale, resource management, or failure modes. Works in development with small data sets and low concurrency.
+## Context
 
-## Why It Fails at Scale
+What is the situation that requires a decision?
+What constraints or requirements exist?
+What is the consequence of not deciding?
 
-The naive approach breaks due to: increased load revealing O(N) complexity, resource contention under concurrency, or missing failure handling causing cascading errors.
+## Decision
 
-## Optimized Approach
+What was decided?
+State it in the active voice: "We will use X because..."
 
-The optimized approach applies systems thinking: bounded resources, explicit failure handling, metrics instrumentation, and algorithmic improvements where applicable.
+## Considered Alternatives
 
-## Complexity Analysis
+### Alternative A: {Name}
+Pros:
+- ...
+Cons:
+- ...
+Why rejected: ...
 
-| Operation | Time | Space | Notes |
-|-----------|------|-------|-------|
-| Core hot path | O(1) or O(log N) | O(N) | See implementation details |
-| Setup/teardown | O(1) | O(pool_size) | Amortized over lifetime |
+### Alternative B: {Name}
+...
 
-## Benchmark (p50, p99, CPU, Memory)
+## Consequences
 
-```
-Setup: Linux, PostgreSQL 15/Redis 7, 8-core machine, same-host connections (0.5ms RTT)
-Concurrent workers: 50, Total requests: 10,000
+What becomes easier or harder because of this decision?
+What follow-up decisions does this create?
+What technical debt is being knowingly accepted?
 
-Naive:     p50=50ms    p99=200ms   CPU=30%   Memory=500MB
-Optimized: p50=5ms     p99=15ms    CPU=8%    Memory=50MB
-Improvement: 10x latency, 4x CPU, 10x memory
-```
+## References
 
-## Observability (Metrics, Tracing, Logs)
-
-Key metrics:
-- Throughput: requests/second via Prometheus counter
-- Latency: p50/p95/p99 histograms with 1ms-1s buckets
-- Error rate: 5xx/total requests ratio
-- Resource saturation: CPU, memory, connection pool utilization
-
-Alert thresholds: latency p99 > 500ms, error rate > 1%, pool utilization > 90%.
-
-## Multi-language Implementation (Python, Go, Node.js)
-
-### Python
-
-```python
-# Production-quality implementation in Python
-# Uses async/await for I/O-bound operations
-import asyncio
-from typing import Any
-
-async def optimized_implementation(resource_pool, request: dict) -> dict:
-    async with resource_pool.acquire() as resource:
-        return await resource.process(request)
+- Links to RFCs, blog posts, internal data that informed the decision
 ```
 
-### Go
+## When to Write an ADR
 
-```go
-// Go implementation using goroutines and channels
-func optimizedImplementation(pool ResourcePool, req Request) (Response, error) {
-    resource, err := pool.Acquire(context.Background())
-    if err != nil {
-        return Response{}, fmt.Errorf("acquire: %w", err)
-    }
-    defer pool.Release(resource)
-    return resource.Process(req)
-}
+Write an ADR for decisions that are:
+- **Hard to reverse** (database choice, framework choice, data model)
+- **Cross-team impact** (API contract changes, shared service behavior)
+- **Require significant context** (why we chose eventual consistency here)
+- **Create technical debt** (shortcuts taken with known future cost)
+
+Do NOT write an ADR for:
+- Implementation details within a component
+- Stylistic choices (covered by STYLE_GUIDE)
+- Decisions that will obviously be revisited soon
+
+## ADR Lifecycle
+
+```
+Proposed → (review period, typically 1 week) → Accepted → [in use]
+                                                         ↓
+                                              Deprecated (retired)
+                                              Superseded by ADR-N (replaced)
 ```
 
-### Node.js
+## Example: ADR-007: Connection Pooling Strategy
 
-```javascript
-// Node.js async implementation
-async function optimizedImplementation(pool, request) {
-    const resource = await pool.acquire();
-    try {
-        return await resource.process(request);
-    } finally {
-        pool.release(resource);
-    }
-}
+```markdown
+# ADR-007: Use pgx Connection Pool Over Standard database/sql
+
+**Date:** 2024-01-15
+**Status:** Accepted
+**Deciders:** Platform team
+
+## Context
+
+Our PostgreSQL-backed services were creating new connections per request.
+At peak load (500 req/s), this caused 500 TCP handshakes/second against
+the database, adding 15ms overhead per request and exhausting DB connections.
+
+## Decision
+
+We will use pgx/pgxpool for all PostgreSQL connections, configured with:
+- MinConns: 5, MaxConns: 20 (based on Little's Law: 500 req/s × 0.015s × 1.3)
+- MaxConnLifetime: 30 minutes
+- Health check period: 1 minute
+
+## Considered Alternatives
+
+### standard database/sql with lib/pq
+Pros: Standard library interface, familiar
+Cons: No native connection pool; requires third-party pool; lower performance
+Why rejected: pgx provides 40% higher throughput in benchmarks.
+
+### PgBouncer (external proxy)
+Pros: Language-agnostic, handles serverless patterns
+Cons: Additional infrastructure component; adds latency hop
+Why rejected: Not needed at current scale; revisit if we move to Lambda.
+
+## Consequences
+
+- All new services must use pgx pool; legacy services migrated by Q2
+- Pool metrics must be exported (active, idle, wait time)
+- Developers must not hold connections across external HTTP calls
+- Follow-up ADR needed for connection pool in Lambda environments
 ```
 
-## Trade-offs
+## ADR Numbering and Storage
 
-| Approach | Latency | Throughput | Complexity | Best For |
-|----------|---------|------------|------------|---------|
-| Simple | High | Low | Low | Dev/testing |
-| Pooled | Low | High | Medium | Production |
-| Distributed | Variable | Very High | High | Large scale |
+Store ADRs in the repository under `docs/adr/` or `decisions/`:
+```
+docs/
+  adr/
+    001-use-postgresql-over-mysql.md
+    002-event-driven-for-notifications.md
+    007-connection-pooling-strategy.md
+```
 
-## Failure Modes
-
-1. **Resource exhaustion:** Unbounded resource creation causes OOM or FD limit hits. Mitigation: configure explicit limits and timeouts.
-2. **Cascading failures:** One slow dependency causes upstream timeouts to accumulate. Mitigation: circuit breakers with fast-fail.
-3. **Silent data corruption:** Missing validation allows bad data to propagate. Mitigation: validate at entry points, not just outputs.
-4. **Configuration defaults:** Library defaults are rarely production-appropriate. Always review and set explicitly.
-
-## When NOT to Use
-
-- **When scale doesn't justify complexity:** For < 100 req/s with simple workloads, simpler solutions are more maintainable.
-- **When a managed service exists:** If a cloud provider offers this as a service, evaluate whether the operational overhead of self-hosting is justified.
-- **When your team lacks expertise:** Complex systems require operational knowledge to run correctly. Factor in the learning curve.
-
-## Lab
-
-Implement the naive and optimized versions, measure the difference with the provided benchmark harness, and observe the failure modes by deliberately exhausting resources.
+Number sequentially. Never reuse a number. Superseded ADRs are kept for history.
 
 ## Key Takeaways
 
-1. Measure before optimizing — intuition is often wrong about where bottlenecks are.
-2. Default configurations are starting points, not production settings.
-3. Every optimization has a trade-off; understand the cost before applying it.
-4. Instrument everything from the start — retrofitting observability is harder than building it in.
-5. Failure modes are as important as happy paths — test them explicitly.
+1. ADRs are the most valuable documentation investment a team can make — they depreciate slowly.
+2. Write them when the decision is being made, not after. Reconstruction produces poorer documents.
+3. The "Consequences" section is the most important — honest about trade-offs accepted.
+4. "Superseded by ADR-N" is a success pattern, not a failure — decisions should evolve.
+5. An ADR library is a team's institutional memory. Protect it.
 
 ## Related Modules
 
-- `../../07-core-backend-engineering/` — practical application of these concepts
-- `../../09-performance-engineering/01-profiling-and-benchmarking.md` — measurement methodology
-- `../../01-mathematics-for-systems/04-queueing-theory.md` — formal resource sizing
+- `./01-technical-leadership.md` — when and how to drive architectural decisions
+- `./03-system-reviews.md` — ADRs are reviewed during system reviews

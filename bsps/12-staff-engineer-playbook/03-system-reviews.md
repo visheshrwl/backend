@@ -1,139 +1,119 @@
 # System Reviews
 
-## Problem
+## What Is a System Review?
 
-System Reviews is a fundamental component of backend engineering that directly impacts latency, throughput, and reliability at scale.
+A system review is a structured evaluation of a production system's architecture, implementation quality, and operational posture. It is distinct from a code review (tactical, PR-level) and a design review (prospective, pre-build). System reviews are retrospective and comprehensive.
 
-## Why It Matters (Latency, Throughput, Cost)
+## When to Conduct a System Review
 
-Understanding system reviews enables engineers to make informed architectural decisions backed by measurement rather than intuition. The wrong approach at scale translates directly to increased costs, user-facing latency, and operational burden.
+- Before a system is handed off to a new team
+- After a significant incident whose root cause implicated system design
+- When a system's scale changes by 10× (new requirements, not new code)
+- Annually for any system with > $100k/year operational cost
+- When considering a major re-architecture investment
 
-## Mental Model
+## Review Structure
 
-System Reviews can be understood through the lens of the systems it interacts with: the OS, the network stack, and the application layer. Each abstraction has a cost model that must be internalized.
+**Preparation (1 week before review):**
+1. Collect metrics: p50/p99 latency, error rate, throughput for last 90 days
+2. Run `enterprise-kit/backend-audit-checklist.md`
+3. List all ADRs for the system
+4. List known technical debt (backlog items tagged "tech-debt")
 
-## Underlying Theory (OS / CN / DSA / Math Linkage)
+**Review Meeting (2-3 hours):**
 
-This topic draws on: process/thread model (Module 03), network stack (Module 04), data structures (Module 02), and queueing theory (Module 01). The cross-domain connections are what make this topic tractable at depth.
+### 1. Observability Assessment (30 min)
+Questions:
+- Can you tell, within 5 minutes, when the system is degraded?
+- Do alerts fire before users notice?
+- Can you trace a single request from entry to exit across all components?
 
-## Naive Approach
+Pass criteria: RED metrics (Rate/Errors/Duration) per endpoint, distributed traces, structured logs.
 
-A straightforward implementation without considering scale, resource management, or failure modes. Works in development with small data sets and low concurrency.
-
-## Why It Fails at Scale
-
-The naive approach breaks due to: increased load revealing O(N) complexity, resource contention under concurrency, or missing failure handling causing cascading errors.
-
-## Optimized Approach
-
-The optimized approach applies systems thinking: bounded resources, explicit failure handling, metrics instrumentation, and algorithmic improvements where applicable.
-
-## Complexity Analysis
-
-| Operation | Time | Space | Notes |
-|-----------|------|-------|-------|
-| Core hot path | O(1) or O(log N) | O(N) | See implementation details |
-| Setup/teardown | O(1) | O(pool_size) | Amortized over lifetime |
-
-## Benchmark (p50, p99, CPU, Memory)
-
+### 2. Performance Profile (45 min)
 ```
-Setup: Linux, PostgreSQL 15/Redis 7, 8-core machine, same-host connections (0.5ms RTT)
-Concurrent workers: 50, Total requests: 10,000
-
-Naive:     p50=50ms    p99=200ms   CPU=30%   Memory=500MB
-Optimized: p50=5ms     p99=15ms    CPU=8%    Memory=50MB
-Improvement: 10x latency, 4x CPU, 10x memory
+For each critical path:
+  □ What is the p50 and p99 latency? What is the target?
+  □ How many database queries per request?
+  □ What is the cache hit rate?
+  □ What is the connection pool utilization at peak?
+  □ Are there known N+1 patterns?
 ```
 
-## Observability (Metrics, Tracing, Logs)
+### 3. Reliability Assessment (30 min)
+- What are the top 3 single points of failure?
+- Is there a circuit breaker on every external dependency?
+- What happens when the database is unavailable for 30 seconds?
+- What is the RTO (Recovery Time Objective) and RPO (Recovery Point Objective)?
 
-Key metrics:
-- Throughput: requests/second via Prometheus counter
-- Latency: p50/p95/p99 histograms with 1ms-1s buckets
-- Error rate: 5xx/total requests ratio
-- Resource saturation: CPU, memory, connection pool utilization
+### 4. Scalability Assessment (30 min)
+- At what load does the current architecture break?
+- What is the cost to scale 2×? 10×?
+- Are there stateful components that prevent horizontal scaling?
 
-Alert thresholds: latency p99 > 500ms, error rate > 1%, pool utilization > 90%.
+### 5. Security Assessment (15 min)
+- Are all endpoints authenticated?
+- Is there rate limiting on public endpoints?
+- When were dependencies last scanned for CVEs?
 
-## Multi-language Implementation (Python, Go, Node.js)
+### 6. Technical Debt Inventory (30 min)
+For each known debt item:
+- What is the cost of carrying it (reliability risk, performance impact, development friction)?
+- What is the cost to pay it down?
+- What is the recommended priority?
 
-### Python
+## Review Output
 
-```python
-# Production-quality implementation in Python
-# Uses async/await for I/O-bound operations
-import asyncio
-from typing import Any
+The review produces a written report with:
 
-async def optimized_implementation(resource_pool, request: dict) -> dict:
-    async with resource_pool.acquire() as resource:
-        return await resource.process(request)
+```
+System: _______________  Review Date: _______________
+
+SUMMARY
+  Overall health: [Green / Yellow / Red]
+  Immediate actions required: [list]
+
+FINDINGS
+  [Finding]: [Description]
+  [Severity]: [Critical / High / Medium / Low]
+  [Recommendation]: [Specific action with owner and deadline]
+  [Linked ADR/ticket]: [reference]
+
+METRICS BASELINE (for next review comparison)
+  p99 latency: ___ms  Error rate: ___%  Throughput: ___/s
+
+NEXT REVIEW: [Date]
 ```
 
-### Go
+## Severity Definitions
 
-```go
-// Go implementation using goroutines and channels
-func optimizedImplementation(pool ResourcePool, req Request) (Response, error) {
-    resource, err := pool.Acquire(context.Background())
-    if err != nil {
-        return Response{}, fmt.Errorf("acquire: %w", err)
-    }
-    defer pool.Release(resource)
-    return resource.Process(req)
-}
-```
+| Severity | Definition | Response |
+|----------|-----------|----------|
+| Critical | Data loss risk, security breach, or imminent outage | Fix within 1 week |
+| High | Significant reliability/performance issue | Fix within 1 sprint |
+| Medium | Technical debt with tangible cost | Plan within quarter |
+| Low | Improvement opportunity | Backlog |
 
-### Node.js
+## System Review vs Architecture Review
 
-```javascript
-// Node.js async implementation
-async function optimizedImplementation(pool, request) {
-    const resource = await pool.acquire();
-    try {
-        return await resource.process(request);
-    } finally {
-        pool.release(resource);
-    }
-}
-```
-
-## Trade-offs
-
-| Approach | Latency | Throughput | Complexity | Best For |
-|----------|---------|------------|------------|---------|
-| Simple | High | Low | Low | Dev/testing |
-| Pooled | Low | High | Medium | Production |
-| Distributed | Variable | Very High | High | Large scale |
-
-## Failure Modes
-
-1. **Resource exhaustion:** Unbounded resource creation causes OOM or FD limit hits. Mitigation: configure explicit limits and timeouts.
-2. **Cascading failures:** One slow dependency causes upstream timeouts to accumulate. Mitigation: circuit breakers with fast-fail.
-3. **Silent data corruption:** Missing validation allows bad data to propagate. Mitigation: validate at entry points, not just outputs.
-4. **Configuration defaults:** Library defaults are rarely production-appropriate. Always review and set explicitly.
-
-## When NOT to Use
-
-- **When scale doesn't justify complexity:** For < 100 req/s with simple workloads, simpler solutions are more maintainable.
-- **When a managed service exists:** If a cloud provider offers this as a service, evaluate whether the operational overhead of self-hosting is justified.
-- **When your team lacks expertise:** Complex systems require operational knowledge to run correctly. Factor in the learning curve.
-
-## Lab
-
-Implement the naive and optimized versions, measure the difference with the provided benchmark harness, and observe the failure modes by deliberately exhausting resources.
+| | System Review | Architecture Review |
+|--|--------------|---------------------|
+| Timing | Retrospective (system exists) | Prospective (pre-build) |
+| Focus | Current state quality | Proposed design soundness |
+| Output | Remediation plan | Approval or redesign request |
+| Duration | 2–3 hours | 1–2 hours |
 
 ## Key Takeaways
 
-1. Measure before optimizing — intuition is often wrong about where bottlenecks are.
-2. Default configurations are starting points, not production settings.
-3. Every optimization has a trade-off; understand the cost before applying it.
-4. Instrument everything from the start — retrofitting observability is harder than building it in.
-5. Failure modes are as important as happy paths — test them explicitly.
+1. System reviews are how institutional knowledge is transferred between teams.
+2. The hardest part is quantifying "good enough" — use the audit checklist thresholds.
+3. Always produce a written report. Verbal reviews produce no accountability.
+4. Severity ratings must be honest. "Low" severity is how critical debt hides for years.
+5. The next review date is mandatory. Without it, the review is a one-time event, not a practice.
 
 ## Related Modules
 
-- `../../07-core-backend-engineering/` — practical application of these concepts
-- `../../09-performance-engineering/01-profiling-and-benchmarking.md` — measurement methodology
-- `../../01-mathematics-for-systems/04-queueing-theory.md` — formal resource sizing
+- `./01-technical-leadership.md` — who leads system reviews
+- `./02-architecture-decision-records.md` — ADRs provide context for system reviews
+- `../../enterprise-kit/backend-audit-checklist.md` — structured checklist for the review
+- `../../bsps/10-production-systems/01-observability.md` — what to examine during review
