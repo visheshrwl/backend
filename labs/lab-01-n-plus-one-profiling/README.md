@@ -18,11 +18,15 @@ The exact numbers depend on your machine, but the relative improvement will be c
 
 ## Parts
 
-This lab runs against **real PostgreSQL** (provisioned for you — `from labkit
-import db`), so the query count maps to real database round trips. It creates and
-seeds its own tables (`n1_users`, `n1_posts`); `db.query_count` is the instrument
-that proves 101 → 1 → 2. Implemented in `python/` (`stub.py` to fill in,
-`solution.py` for reference, `test_lab.py` to validate). Two parts:
+This lab runs against **real PostgreSQL** (provisioned for you — `labkit` hands
+each language a ready `db` handle), so the query count maps to real database
+round trips. It creates and seeds its own tables (`n1_users`, `n1_posts`); the
+per-language query counter is the instrument that proves 101 → 1 → 2.
+
+> **Available in 8 languages** — Python, Go, JavaScript, TypeScript, Ruby, Rust,
+> C++, and C. Each `<lang>/` folder has a `stub` you implement and a `solution`
+> for reference; pick the tab in the lab console or run the language's `testCmd`
+> from `lab.json`. Two parts:
 
 - **Part 1 — query-shape fixes:** implement `fetch_users_with_posts_join`
   (1 query) and `fetch_users_with_posts_in_batch` (2 queries).

@@ -1,98 +1,85 @@
-# 05-sorting-and-searching
+# Sorting and Searching
 
 ## Problem
 
-Sorting is the most studied problem in computer science, and also the most misunderstood in production. Not because engineers don't know what sorting is — they do. Because they treat it as solved. They call `.sort()`, the array gets sorted, and they move on. The algorithm beneath that call makes decisions they never examined, under assumptions they never verified, with performance characteristics that will surprise them at scale.
+Sorting is the most studied problem in all of computer science, and somehow still the most *misunderstood* in production — and the reason is almost funny: engineers misunderstand it because they think they understand it completely. You call `.sort()`, the array comes back sorted, you move on with your day. What just happened? An algorithm you didn't choose made decisions you never examined, under assumptions you never checked, with worst-case behavior that's lying in wait for the exact input that shows up at scale. "Sorting is solved" is true the way "addition is solved" is true — right up until the floating-point chapter mugs you.
 
-The misunderstanding has a specific shape. Engineers know that quicksort is O(N log N) average and O(N²) worst case. What they don't know is that "worst case" is not a theoretical curiosity — it is a security vulnerability. An attacker who can control your input can force O(N²) behavior in a naïve quicksort, turning your API endpoint into a CPU denial-of-service vector. CVE-2011-4885 (PHP hash collision DoS), CVE-2003-0364 (various web frameworks) — these are sorting and hashing assumptions violated by adversarial input.
+Let me show you the shape of the misunderstanding, because it's specific. Everyone knows quicksort is O(N log N) average, O(N²) worst case. What almost nobody internalizes is that "worst case" isn't a dusty theoretical footnote — **it's a security vulnerability.** An attacker who controls your input can *force* that O(N²) on a naïve quicksort, and just like that your innocent little API endpoint that sorts query parameters is a CPU denial-of-service vector. This isn't hypothetical; it's a whole family of real CVEs (the 2011 hash-collision DoS wave next door in the hash-tables chapter is the same disease in a different organ).
 
-They know binary search is O(log N). They don't know that the textbook implementation has a bug that manifests only for arrays larger than 2³⁰ elements — a bug that existed in Java's standard library for nearly a decade (Bloch, 2006, same author as the binary search bug from module 05-numerical-stability). They don't know that binary search on modern hardware is often slower than linear search for N < 64 due to branch misprediction, and that the SIMD-based linear scan in their database engine is beating their O(log N) algorithm on the inputs that actually appear in production.
+Everyone knows binary search is O(log N). Fewer know that the *textbook* implementation — the one in your data-structures notes — contains a bug that only bites on arrays larger than about 2³⁰ elements, and that this exact bug sat undiscovered in the Java standard library for **nine years** before Josh Bloch wrote it up. And almost nobody knows that on modern hardware, binary search is frequently *slower* than a dumb linear scan for N under ~64, because the unpredictable branches wreck the CPU's pipeline — which is why the database engine you admire is beating your clever O(log N) with a brute-force SIMD scan on the inputs that actually occur.
 
-The gap between asymptotic analysis and production performance is widest for sorting and searching. This module closes it.
-
----
+The gap between "what the asymptotics promise" and "what the machine actually does" is wider for sorting and searching than for anything else in this book. That gap is the whole subject. This chapter closes it — not by memorizing algorithms, but by understanding *which assumption each one is built on*, so you can tell, for your data, on your hardware, against your adversary, which one is about to betray you.
 
 ## Why It Matters (Latency, Throughput, Cost)
 
-**Database query plans pivot on sort cost.** When PostgreSQL plans `SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 10`, it chooses between: (a) index scan on `(customer_id, created_at DESC)` — O(log N + 10) — or (b) index scan on `customer_id` followed by an in-memory sort — O(K log K) where K is the number of rows for that customer. The decision depends on K, on whether the composite index exists, on the `work_mem` setting that governs whether the sort spills to disk, and on the query planner's estimate of K. A stale statistics estimate of K = 100 when reality is K = 500,000 causes the planner to choose the in-memory sort path, which spills to disk, which turns a 2ms query into a 4-second query. The fix requires understanding both the sort algorithm the planner uses (external merge sort for disk-spilling workloads) and why its cardinality estimate was wrong.
+**Your database's query plan pivots on the cost of a sort.** When PostgreSQL plans `SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 10`, it's choosing between two worlds. World A: walk a composite index on `(customer_id, created_at DESC)` and grab the first 10 — basically O(log N + 10). World B: pull every row for that customer, then sort them in memory — O(K log K) for K matching rows. Which world it picks depends on whether that index exists, on `work_mem` (the budget that decides whether the sort stays in RAM or *spills to disk*), and on the planner's *estimate* of K. Get a stale statistic — planner thinks K=100, reality is K=500,000 — and it cheerfully chooses the in-memory sort, which blows past `work_mem`, spills to disk, and turns a 2 ms query into a 4-second one. Fixing it requires understanding both the sort algorithm the planner falls back to (external merge sort, see below) *and* why its row estimate was wrong. Sorting cost is not a detail of query planning; it *is* query planning.
 
-**Merge sort is the only correct algorithm for external sorting.** When your dataset doesn't fit in memory — and at scale, it won't — the sorting algorithm is constrained by I/O, not CPU. External merge sort divides the input into chunks that fit in memory, sorts each chunk, then merges. The merge phase reads each record exactly once and writes each record exactly once: O(N/B × log(N/B)) I/Os where B is the block size. This is optimal. Any algorithm that requires random access to disk (quicksort, heapsort) is catastrophically worse on spinning disk and significantly worse on NVMe. Every database engine, every Hadoop/Spark shuffle, every external sort utility uses merge sort. This is not a coincidence.
+**Merge sort is the only correct algorithm once your data outgrows RAM — and at scale, it always does.** When the dataset doesn't fit in memory, the bottleneck stops being CPU and becomes *I/O*, and the entire ranking of algorithms reshuffles. External merge sort reads each record exactly once and writes it exactly once per pass — optimal for sequential storage. Anything needing *random* access to disk (quicksort, heapsort) is catastrophic on spinning rust and still badly wasteful on NVMe. This is why *every* database engine, *every* Spark/Hadoop shuffle, *every* big external sort uses merge sort. It's not fashion; it's the only family that respects the I/O reality (the arrays-chapter "sequential beats random," one level down the hierarchy).
 
-**Sort stability determines correctness in multi-key sorting.** A stable sort preserves the relative order of equal elements. Python's Timsort is stable; C's `qsort` is not guaranteed stable; Java's `Arrays.sort` for objects is stable (merge sort-based), for primitives is not (dual-pivot quicksort). When you sort a list of orders by amount, then sort by customer ID, you expect the final result to be sorted by customer ID with ties broken by amount. This is only guaranteed if the second sort is stable — it must preserve the ordering established by the first. Teams that sort by multiple keys in sequence and don't use a stable sort are relying on undefined behavior. The correct approach is a single sort with a composite comparator, but if you must chain sorts, verify stability.
+**Sort stability silently decides correctness when you sort by more than one key.** A *stable* sort keeps equal elements in their original relative order; an unstable one is free to shuffle them. Sort orders by amount, *then* by customer ID, and you expect the result grouped by customer with ties still ordered by amount. That only holds if the second sort is **stable** — otherwise it's allowed to scramble the order the first sort established, and you're relying on undefined behavior that happens to work until it doesn't. Python's Timsort is stable; C's `qsort` is not guaranteed stable; Java's `Arrays.sort` is stable for objects but *not* for primitives. Teams that chain sorts without knowing their sort's stability have a correctness bug that's invisible in every test with distinct keys.
 
-**Searching in cache is a different problem than searching in memory.** Binary search on an array of N integers has O(log N) comparisons and O(log N) cache misses — each comparison jumps to a distant memory location, causing a cache miss with high probability for large N. A B-tree with branching factor 16 has the same O(log N) comparisons but each comparison fetches a 64-byte cache line containing 16 keys — dramatically better cache behavior. For in-memory search over large arrays, a B-tree layout (van Emde Boas layout, Eytzinger layout) can outperform binary search by 3-5× purely through cache locality. This is why InnoDB's in-memory adaptive hash index coexists with the B-tree — hash lookup for point queries that hit the AHI, B-tree for everything else.
-
----
+**Searching in cache is a different problem than searching in memory.** Binary search over N integers does O(log N) comparisons — but each comparison leaps to a far-away address, so it's also O(log N) *cache misses*, each ~100 ns. A B-tree-style layout does the same O(log N) comparisons but each node fetch pulls a 64-byte cache line holding *many* keys — dramatically better locality. For in-memory search over big arrays, a cache-aware layout (Eytzinger, below) can beat plain binary search by 3–5× on identical comparison counts, purely on memory behavior. This is why InnoDB keeps an in-memory adaptive hash index *alongside* its B-tree, and it's the same lesson the arrays chapter beat into us: the comparison is free; the *fetch* is the cost.
 
 ## Mental Model
 
-Sorting and searching are not single problems — they are families of problems parameterized by:
+Here's the mental shift that turns this from a zoo of algorithms into a map: **sorting and searching aren't single problems. They're *families* of problems, and which family member you're in is set by a handful of dials.** Name your position on these dials and the right algorithm is nearly forced:
 
-- **Data location**: in memory, on disk, distributed across nodes
-- **Data size**: fits in L1/L2/L3 cache, fits in RAM, doesn't fit in RAM
-- **Input distribution**: random, nearly sorted, reverse sorted, many duplicates, adversarially constructed
-- **Query type**: single lookup, repeated lookup, range lookup, approximate lookup, order statistics (kth smallest)
-- **Stability requirement**: must preserve order of equals, or not
-- **Comparison availability**: total order with comparator, only equality, only hash
+- **Where does the data live?** In cache, in RAM, on disk, or spread across machines.
+- **How big is it?** Fits in L1/L2/L3, fits in RAM, or doesn't fit in RAM.
+- **What does the input look like?** Random, nearly-sorted, reverse-sorted, full of duplicates, or *adversarially constructed*.
+- **What are you actually asking?** One lookup, repeated lookups, a range, an approximate answer, or the kth-smallest (order statistics).
+- **Do you need stability?** Must equal elements keep their order, or not.
+- **What can you compare?** A full ordering with a comparator, only equality, or only a hash.
 
-The optimal algorithm changes with every dimension. The discipline is identifying which point in this space your problem occupies, then selecting the algorithm whose design assumptions match.
-
----
+The optimal algorithm changes with *every one* of these dials. There is no "best sort" — there's only the best sort *for this point in the space.* The discipline, the thing that separates someone who calls `.sort()` from someone who knows what it does, is locating your problem in this space and picking the algorithm whose built-in assumptions match your reality. Everything below is a tour of where the famous algorithms live in that space — and, just as importantly, where they *break*.
 
 ## Underlying Theory
 
-### The Comparison Sort Lower Bound and What It Actually Means
+### Layer 1 — The O(N log N) wall, and the secret door through it
 
-The Ω(N log N) lower bound for comparison-based sorting is one of the few information-theoretic lower bounds that applies unconditionally to a class of algorithms. The proof: N! possible orderings of N elements, each comparison eliminates at most half the remaining possibilities, so at least ⌈log₂(N!)⌉ comparisons are necessary. By Stirling's approximation, log₂(N!) ≈ N log₂ N − N log₂ e ≈ N log₂ N. Therefore any comparison sort requires Ω(N log N) comparisons in the worst case.
+First, a humbling fact that's actually liberating once you understand it: **any sort that works by comparing elements cannot beat O(N log N) in the worst case.** This is one of the rare *unconditional* lower bounds in all of CS, and the proof is a one-line piece of information theory. There are N! possible orderings of N elements. Each yes/no comparison can, at best, cut the remaining possibilities in half. To pin down which of N! orderings you're in, you need at least log₂(N!) comparisons — and by Stirling's approximation, log₂(N!) ≈ N log₂ N. So you cannot do fewer than ~N log N comparisons. No cleverness escapes it. The wall is real.
 
-This bound applies to the number of *comparisons*. It says nothing about:
-- Cache misses (which often dominate wall time)
-- Branch mispredictions (critical for in-memory sorting)
-- Memory writes (relevant for cache bandwidth)
-- Parallel work (merge sort parallelizes; insertion sort doesn't)
+But — and this is the door — **that bound is about the number of *comparisons*, and it says nothing about wall-clock time.** It's silent on cache misses (which usually dominate), branch mispredictions (critical in memory), memory writes, and parallelism. Two algorithms that both hit the N log N comparison floor can differ **5–10× in actual runtime** because of those. So "optimal comparison count" and "fastest" are not the same thing, and the gap between them is where real performance engineering happens.
 
-Algorithms that achieve O(N log N) comparisons can still differ by 5-10× in wall time due to these factors. This is why the "optimal" comparison sort — merge sort, achieving exactly N log N comparisons — is not always the fastest in practice.
+And there's a *second* door: **the wall only applies if comparison is all you can do.** If your keys have *structure* beyond a bare ordering — they're integers, they're fixed-width binary, they're strings over a known alphabet — you can sneak past N log N entirely and sort in **linear time** by *not comparing at all*:
 
-**Beating the lower bound with non-comparison sorts.** If your keys have additional structure beyond a total order — they're integers, they're strings over a finite alphabet, they're fixed-length binary encodings — you can sort in O(N) or O(N + K) where K is the key range.
+- **Counting sort** — O(N + K) for K possible key values. Count how many of each value exist, then reconstruct in order. No comparisons. Perfect for small integer ranges: pixel values (K=256), ages, grades.
+- **Radix sort** — O(d·(N + K)), processing keys digit by digit (least-significant first) with a stable counting sort per digit. For 32-bit integers: 4 passes of base-256 counting sort, total ≈ O(4N) — *linear*. This is the secret weapon for fixed-width keys: GPUs sort with it (massively parallel), network gear classifies packets with it, and on 64-bit timestamps with N > 10⁷ it beats Timsort by 2–3×.
+- **Bucket sort** — O(N + K) *if* the input is uniformly distributed: scatter into buckets, sort each. Non-uniform input degrades it to O(N²), so it's only safe when you know your distribution.
 
-- **Counting sort**: O(N + K) time and space. For each of K possible key values, count occurrences, then reconstruct. Optimal for integer keys with small K. Used in: pixel sorting by color channel (K = 256), age sorting, grade sorting.
-- **Radix sort**: O(d × (N + K)) where d is the number of digits and K is the digit range. Process digit by digit from least significant to most significant (LSD radix sort), using a stable counting sort at each digit. For 32-bit integers: d = 4 passes of base-256 counting sort, K = 256, total O(4N) — linear in N. Used in: GPU sorting (extremely parallelizable), network packet classification, any workload with fixed-width integer or binary keys.
-- **Bucket sort**: O(N + K) average when input is uniformly distributed. Divide key range into K buckets, scatter elements, sort each bucket. If input is not uniform, degenerates to O(N²). Used in: numerical simulation outputs (often uniformly distributed by construction), hash-based distributed sorting.
+The decision rule to carry: **integer or fixed-width keys with a bounded range? Radix sort probably beats every comparison sort you own.** The N log N wall is only a wall for general comparison sorting; structured keys walk right around it.
 
-The decision rule: if your keys are integers with bounded range, radix sort is likely faster than any comparison sort. If your keys are 64-bit timestamps and N > 10⁷, the 4-pass LSD radix sort will beat TimSort by 2-3× on modern hardware.
+### Layer 2 — Quicksort: fast, beloved, and a latent DoS
 
-### Quicksort: Partition Strategies, Adversarial Inputs, and Introsort
+Quicksort is the default in-memory sort for good reason: expected O(N log N), in-place (O(log N) stack), and *cache-friendly* because it partitions contiguous ranges (arrays-chapter sequential access again). Pick a pivot, shove smaller elements left and larger right, recurse on each side. The trouble is entirely in two words: **pivot selection.**
 
-Quicksort's expected O(N log N) with O(log N) stack space makes it the standard in-memory sort for most workloads. Its O(N²) worst case on sorted, reverse-sorted, or many-duplicates inputs is the practical concern.
+The worst case, O(N²), happens when the pivot consistently splits the array into a huge side and a tiny side instead of two halves — which is exactly what occurs on *already-sorted*, *reverse-sorted*, or *many-duplicate* inputs if you naïvely pick the first or last element as pivot. And here's the part that turns a performance footnote into a security incident: **if your pivot strategy is predictable, an attacker can construct the killer input on purpose.** McIlroy (1999) published an algorithm that builds an O(N²)-forcing input for *any* deterministic comparison sort that reveals its pivot through comparisons. So a public endpoint that sorts user-controlled data — JSON keys, query parameters — with textbook quicksort can be brought to its knees by a crafted request. This is the same "performance depends on input distribution = DoS surface" lesson as hash flooding; sorting just gets there a different way.
 
-**Lomuto vs Hoare partition.** Lomuto partition (the one taught in most textbooks) puts the pivot at its final position and requires N-1 comparisons for N elements. Hoare partition (Quicksort's original) requires at most N/3 comparisons on average and does not put the pivot at its final position — it only guarantees elements to the left are ≤ pivot and elements to the right are ≥ pivot. Hoare is faster in practice (fewer swaps, better cache behavior) but harder to implement correctly and less commonly shown in textbook code.
+The mitigations, escalating:
 
-**Pivot selection.** Naïve pivot selection (first element, last element, or random element) is O(N²) on adversarially constructed inputs if the strategy is predictable. "Median-of-three" (median of first, middle, and last elements) defeats many degenerate cases. "Ninther" (median of three medians of three) is more robust. None of these are immune to adversarial input if the attacker can observe your pivot strategy.
+1. **Randomized pivot.** Pick the pivot at random. Now expected O(N log N) regardless of input, and the adversary can't precompute a killer sequence because they can't predict your coin flips. Cheap and effective.
+2. **Introsort** (the real-world default — C++ `std::sort`, and the spirit of many stdlibs). Start as quicksort, but *watch the recursion depth*; if it exceeds ~2 log₂ N (a sign you're sliding toward O(N²)), bail out to **heapsort**, which is O(N log N) worst-case guaranteed (just slower in the common case). Add insertion sort for tiny subarrays (N ≤ 16, where its great constants and cache behavior win). Result: O(N log N) worst case *and* excellent average constants.
+3. **pdqsort (pattern-defeating quicksort)** — the current state of the art, in Rust's `sort_unstable` and modern C++. It detects already-sorted runs, uses block-based partitioning for better branch prediction, and falls back to heapsort on bad patterns. In practice it beats introsort on real-world data.
 
-**The adversarial input problem.** McIlroy (1999) published an algorithm that constructs a "killer" input for any comparison-based sort that reveals its pivot through comparisons. Applied to any deterministic quicksort, it produces O(N²) behavior. Web servers that sort query parameters or JSON keys using such a sort are vulnerable to DoS by sending requests with crafted key orderings. The mitigations:
-1. **Randomized pivot selection**: pivot = random element. Expected O(N log N) regardless of input. Adversary cannot construct a killer sequence without observing random choices.
-2. **Introsort**: the algorithm used by C++ `std::sort`, Rust's `slice::sort_unstable`, and most production standard libraries. Start with quicksort; if recursion depth exceeds 2 × log₂ N (indicating we may be hitting O(N²) behavior), switch to heapsort. Heapsort is O(N log N) worst case but slower in practice — introsort uses it as a fallback, not a primary algorithm. Combined with insertion sort for small subarrays (N ≤ 16), this is O(N log N) worst case with excellent constants.
-3. **Pattern-defeating quicksort (pdqsort)**: the state of the art, used in Rust's standard library, Python (for small arrays inside Timsort), and recent C++ implementations. Detects sorted and reverse-sorted runs, uses block-based partition for better branch prediction, and falls back to heapsort. In practice, faster than introsort on real-world data distributions.
+The takeaway isn't "memorize introsort." It's: **never ship textbook first-element-pivot quicksort on input an adversary can shape.** Use your standard library's hardened sort, and know which one it is.
 
-### Timsort: Exploiting Natural Order in Real Data
+### Layer 3 — Timsort: the algorithm that bet on reality and won
 
-Timsort (Peters, 2002) is not merely a sorting algorithm — it is an algorithm designed for the specific distribution of real-world data: data that has natural runs of already-sorted elements. It exploits this structure to dramatically outperform general-purpose algorithms on typical inputs.
+Most sorts assume the worst about their input — random, adversarial, structureless. Tim Peters (2002) made the opposite bet: **real-world data is not random. It's full of already-sorted stretches.** Event logs arrive roughly in time order. Database rows come out near-sorted. Records that were sorted yesterday and lightly edited are *almost* sorted today. Timsort is engineered to *exploit* that structure, and the bet pays off so well it's the default sort in Python, Java (for objects), Android, and more.
 
-**Core mechanism.** Timsort scans the input for "runs" — maximal already-sorted (or reverse-sorted, which it reverses) subsequences. Runs shorter than `minrun` (computed as 32-64 based on N) are extended using insertion sort. Runs are pushed onto a stack. When the stack's top runs violate the invariant that `len(Z) > len(Y) + len(X)` and `len(Y) > len(X)` (where X, Y, Z are the top three runs), the two smallest runs are merged. This invariant ensures the number of runs on the stack stays O(log N) and that merge passes are balanced.
+The mechanism: Timsort scans for **runs** — maximal already-sorted (or reverse-sorted, which it flips) stretches. Short runs get extended to a minimum length (`minrun`, ~32–64) with insertion sort. Runs are pushed on a stack and merged under invariants that keep merges balanced and the run count O(log N). The clever bit is **galloping mode**: when merging two runs and one is consistently "winning" (contributing many consecutive elements), Timsort switches from one-at-a-time comparison to *exponential search* to find how far it can advance in one leap — turning O(N) comparisons into O(log N) for long ordered stretches.
 
-**Galloping mode.** When merging two runs A and B, if one run consistently contributes many consecutive elements (run A's elements are all smaller than B[0] for k consecutive elements), Timsort switches to "galloping mode" — exponential search to find how far into A the merge can advance before switching. This reduces comparisons from O(N) to O(log N) for inputs with long ordered subsequences. On already-sorted data, Timsort is O(N). On random data, it degrades to O(N log N) with constants comparable to merge sort.
+The result: on already-sorted data, Timsort is **O(N)** — it basically confirms the order and leaves. On random data, it degrades gracefully to O(N log N) with merge-sort-like constants. So if you're sorting anything that tends to arrive in order (timestamps, sequential IDs, lightly-mutated sorted data), Timsort routinely *beats its own asymptotic bound* in practice, because the bound assumes a randomness your data doesn't have. It's the clearest lesson in this chapter that knowing your *input distribution* beats knowing your *algorithms*.
 
-Used by: Python, Java (for objects), Android, GNU Octave. When you call `.sort()` in Python on a list of real-world records, Timsort's run-exploitation means it frequently runs in O(N) or O(N log N) with very small constants — often faster than theoretical lower bound analysis would suggest because it matches the distribution.
+### Layer 4 — Binary search: the algorithm everyone gets wrong
 
-### Binary Search: The Correct Implementation and Its Failure Modes
-
-The textbook binary search:
+Binary search is the second thing you learn in CS and the first thing you implement with a bug. Here's the textbook version, bug included:
 
 ```python
 def binary_search(arr, target):
     lo, hi = 0, len(arr) - 1
     while lo <= hi:
-        mid = (lo + hi) // 2      # BUG: integer overflow for lo + hi > 2^63
+        mid = (lo + hi) // 2      # BUG: (lo + hi) can overflow a fixed-width int
         if arr[mid] == target:
             return mid
         elif arr[mid] < target:
@@ -102,74 +89,74 @@ def binary_search(arr, target):
     return -1
 ```
 
-The overflow bug: `(lo + hi)` overflows when `lo + hi > INT_MAX`. For Python this doesn't matter (arbitrary precision integers). For C, C++, Java, Go, Rust with checked arithmetic — it matters for arrays larger than 2³⁰ elements. The fix: `mid = lo + (hi - lo) // 2`. This is not theoretical — Java's `Arrays.binarySearch` had this bug for nine years.
+The bug: `lo + hi` can overflow when the sum exceeds the integer max — which happens for arrays larger than half of INT_MAX, i.e. > 2³⁰ elements. Python's arbitrary-precision ints hide it; C, C++, Java, Go, Rust do not. The fix is to compute the midpoint without ever forming the dangerous sum:
 
-**The boundary condition variants.** Binary search has multiple correct implementations depending on what you want to return when the target appears multiple times:
+```python
+mid = lo + (hi - lo) // 2     # (hi - lo) is always in range; no overflow
+```
+
+This is not a toy concern — it lived in Java's `Arrays.binarySearch` for nine years, and arrays larger than 2³⁰ exist in production right now.
+
+But "find the exact element" is the *least* useful version of binary search. The versions you actually want answer "**where does this value belong?**" — and they're what databases use for range scans:
 
 ```python
 def lower_bound(arr, target):
-    """First index where arr[i] >= target. Equivalent to C++ std::lower_bound."""
+    """First index where arr[i] >= target  (C++ std::lower_bound)."""
     lo, hi = 0, len(arr)
     while lo < hi:
         mid = lo + (hi - lo) // 2
-        if arr[mid] < target:
-            lo = mid + 1
-        else:
-            hi = mid
+        if arr[mid] < target: lo = mid + 1
+        else:                 hi = mid
     return lo
 
 def upper_bound(arr, target):
-    """First index where arr[i] > target. Equivalent to C++ std::upper_bound."""
+    """First index where arr[i] > target  (C++ std::upper_bound)."""
     lo, hi = 0, len(arr)
     while lo < hi:
         mid = lo + (hi - lo) // 2
-        if arr[mid] <= target:
-            lo = mid + 1
-        else:
-            hi = mid
+        if arr[mid] <= target: lo = mid + 1
+        else:                  hi = mid
     return lo
 ```
 
-`lower_bound` and `upper_bound` together give you `[lo, hi)` — the half-open range of all occurrences of target. `upper_bound(arr, target) - lower_bound(arr, target)` is the count of target occurrences in O(log N). This is how databases implement index range scans: binary search to the lower bound of the range predicate, then scan forward to the upper bound.
+Together they bracket *all* occurrences of a value: `[lower_bound, upper_bound)` is the half-open range, and `upper_bound − lower_bound` is the **count of matches in O(log N)**. This is exactly how a database does an index range scan — binary-search to the lower edge of the predicate, then walk forward to the upper edge.
 
-**Branch misprediction and branchless binary search.** The conditional jump in the binary search inner loop is unpredictable — the branch predictor has ~50% accuracy on random data. On modern CPUs, a mispredicted branch costs ~15-20 cycles. For N = 10⁶, binary search takes ~20 iterations, each with ~10 cycles of misprediction cost on average = 200 cycles of branch misprediction waste per lookup.
+And now the hardware reality the asymptotics hide. The branch in binary search's inner loop is *unpredictable* — about 50/50 on random data — and a mispredicted branch costs ~15–20 cycles on a modern CPU. Two fixes, straight from the arrays-chapter playbook:
 
-Branchless binary search eliminates the conditional jump using conditional moves (CMOV on x86):
+- **Branchless binary search** replaces the `if` with a conditional move (CMOV), eliminating the misprediction entirely:
 
 ```c
-// Branchless binary search in C
 size_t branchless_lower_bound(int *arr, size_t n, int target) {
     size_t lo = 0;
     while (n > 1) {
         size_t half = n / 2;
-        lo += (arr[lo + half - 1] < target) ? half : 0;  // compiled to CMOV
-        n -= half;
+        lo += (arr[lo + half - 1] < target) ? half : 0;  // compiles to CMOV, no branch
+        n  -= half;
     }
     return lo;
 }
 ```
 
-This compiles to a CMOV instruction — a conditional move with no branch. On random data, this is 1.5-3× faster than the branching version for large N. For small N (≤ 64), linear SIMD scan is often faster still due to vectorization.
+On random data this runs 1.5–3× faster than the branching version for large N. (And for small N ≤ 64, a straight SIMD linear scan beats *both* — no branches, no log-depth pointer jumps, just one cache line chewed by vector instructions. The "dumb" algorithm wins at small scale.)
 
-**Eytzinger layout for cache-optimal binary search.** Standard binary search on a sorted array has poor cache behavior: the first comparison accesses index N/2 (likely in cache), the second accesses N/4 or 3N/4 (possible cache miss), and so on — each level of the search tree accesses a different cache line. The Eytzinger layout reindexes the array to match the binary search tree's access pattern, placing the root at index 1, its children at 2 and 3, their children at 4-7, and so on (identical to a BFS ordering of a complete binary tree). Now binary search accesses elements in indices 1, 2 or 3, 4-7... which are all in the first few cache lines. For N = 10⁶ integers, Eytzinger-layout binary search is ~2× faster than sorted-array binary search due to prefetching. This is the layout used in InnoDB's adaptive hash index and in several research database systems.
+- **Eytzinger layout** attacks the *cache misses* instead of the branches. Plain binary search jumps to N/2, then N/4 or 3N/4, then... — each step a different, distant cache line. Eytzinger *re-orders the array* into the binary tree's access pattern: root at index 1, its children at 2 and 3, theirs at 4–7 (a breadth-first layout of the search tree). Now the first several comparisons all hit the first few cache lines, the prefetcher kicks in, and for N=10⁶ integers you get ~2× over sorted-array binary search on *identical comparison counts.* It's the same idea that makes a B-tree node fat: arrange data so the search walks cache lines, not the whole address space. (This is the bridge to the trees chapter — Eytzinger is binary search wearing B-tree cache behavior.)
 
-### Order Statistics and the kth Element Problem
+### Layer 5 — Order statistics: the kth element without sorting
 
-Finding the kth smallest element in an unsorted array without fully sorting it. Naïve approach: sort in O(N log N), return element at index k. Optimal: Quickselect in O(N) average, O(N²) worst case. Optimal worst-case: Median-of-Medians in O(N) worst case.
+"What's the median latency across these 10,000 samples?" "What's the p99?" The lazy answer is sort (O(N log N)) and index. But you don't need the whole order to find *one* position — and you can do it in **O(N)**.
 
-**Quickselect:**
+**Quickselect** is quicksort that only recurses into the side containing the answer:
 
 ```python
 import random
-
 def quickselect(arr, k):
-    """Returns the kth smallest element (0-indexed) in O(N) expected time."""
+    """kth smallest (0-indexed), O(N) expected."""
     if len(arr) == 1:
         return arr[0]
     pivot = random.choice(arr)
-    lows  = [x for x in arr if x < pivot]
-    highs = [x for x in arr if x > pivot]
+    lows   = [x for x in arr if x < pivot]
     pivots = [x for x in arr if x == pivot]
+    highs  = [x for x in arr if x > pivot]
     if k < len(lows):
         return quickselect(lows, k)
     elif k < len(lows) + len(pivots):
@@ -178,100 +165,97 @@ def quickselect(arr, k):
         return quickselect(highs, k - len(lows) - len(pivots))
 ```
 
-**Median-of-Medians** guarantees O(N) worst case by choosing a pivot that is guaranteed to be between the 30th and 70th percentile: divide into groups of 5, find the median of each group (O(1) per group, O(N/5) total), recursively find the median of those medians, use that as the pivot. The pivot eliminates at least 30% of elements per recursive call, giving T(N) = T(N/5) + T(7N/10) + O(N) which solves to O(N). In practice, Median-of-Medians has large constants and is rarely used in production — random pivot Quickselect with O(N) expected time is preferred.
+Because you discard one side each step, the work is N + N/2 + N/4 + ... = O(N) expected — you find the kth element faster than you could sort. Worst case is O(N²) (same pivot problem as quicksort); the random pivot makes that astronomically unlikely. There's a worst-case-O(N) guarantee — **median-of-medians**, which picks a provably-good pivot by recursively finding the median of group medians — but its constants are large enough that random-pivot quickselect wins in practice. Where this shows up: `PERCENTILE_CONT` in your database, streaming-percentile monitoring (find p99 across host samples in O(N), not O(N log N)), and reservoir-sampling pipelines.
 
-**Production uses of order statistics:**
-- **Database percentile queries**: `SELECT PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency) FROM requests`. PostgreSQL implements this with an in-memory sort followed by index access for online queries, or with external merge sort for large datasets.
-- **Reservoir sampling for streaming percentiles**: see module 02. Quickselect applies to the reservoir to find percentiles in O(k) per query.
-- **Median finding in monitoring**: computing the median of a metric across 10,000 host samples. Quickselect in O(N) rather than O(N log N) sort.
+### Layer 6 — External sorting: when the data doesn't fit in RAM
 
-### External Sorting: When Your Data Doesn't Fit in RAM
+Everything changes when the dataset is bigger than memory. CPU comparison cost becomes irrelevant; *I/O* is the whole game, and the algorithm that wins is the one that reads and writes **sequentially**. That algorithm is external merge sort, in two phases:
 
-External merge sort is the algorithm for sorting datasets larger than available memory. It operates in two phases:
+```
+Phase 1 — RUN GENERATION:                Phase 2 — MERGE:
+  read M bytes (all of RAM) ──┐            ┌─ run 1 ─┐
+  sort them in memory          │           ├─ run 2 ─┤ ─► min-heap picks the
+  write as a sorted "run"      │ × ⌈N/M⌉   ├─ run 3 ─┤    global minimum, streams
+  repeat over the whole input ─┘           └─ run F ─┘    out one sorted sequence
+  → produces ⌈N/M⌉ sorted runs on disk    each record read once, written once
+```
 
-**Phase 1 — Run generation.** Read M bytes of data (where M = available RAM), sort in memory using an internal sort (typically replacement selection or quicksort), write as a sorted "run" to disk. Repeat until all data has been processed. This produces ⌈N/M⌉ sorted runs.
+Phase 1 chops the input into RAM-sized chunks, sorts each in memory, and writes them out as sorted runs. (A refinement, **replacement selection**, uses a heap to produce runs ~2× longer than RAM on average, halving the number of runs.) Phase 2 merges the runs with a min-heap. The key lever is **fan-in**: don't merge two runs at a time — merge F at once, where F = memory / (2 × block_size). With big fan-in, the number of passes is ⌈log_F(N/M)⌉, and for realistic numbers (N=1 TB, M=16 GB, B=4 MB → F≈2048) *a single merge pass suffices.* Two sequential passes over the data — one to make runs, one to merge — sort a terabyte. That's why it's the only viable choice, and why it's everywhere:
 
-**Replacement selection** generates runs approximately twice as long as M on average for random input, halving the number of runs. It maintains a min-heap of M elements; always output the minimum that is ≥ the last output value, replacing it with the next input element. When no such element exists, close the current run and start a new one. Expected run length: 2M.
+- **Sort-merge join** — the fundamental database join: sort both relations by the join key (externally if needed), then merge them, emitting matches. O(N log N + M log M) and it produces *sorted output as a side effect*; no hash join beats it asymptotically for large inputs.
+- **Spark's shuffle** — a distributed external merge sort. Map tasks partition output by hash of the key; reduce tasks fetch their partition from every mapper and merge-sort it, spilling to disk when memory fills. It's external merge sort with the disk partly replaced by the network.
 
-**Phase 2 — Merge.** Merge all runs simultaneously using a min-heap of size equal to the number of runs. Each heap operation is O(log(number of runs)); total I/Os are O(N/B × log(N/M)) where B is the disk block size.
+### Layer 7 — When you don't need a total order
 
-**Multi-way merge** with a heap of fan-in F allows merging F runs at once. Instead of binary merge (F=2), use F = available_memory / (2 × block_size) — maximize fan-in limited by memory. For F-way merge, the number of passes needed is ⌈log_F(N/M)⌉. For N = 1TB, M = 16GB, B = 4MB, F = 2048: one merge pass suffices. This is why large-scale sort-merge joins in databases complete in two I/O passes for datasets that fit in a few thousand disk blocks.
+Plenty of "sorting" problems don't actually need everything in order, and recognizing that unlocks much faster solutions.
 
-**Sort-merge join.** The fundamental join algorithm in databases and MapReduce:
-1. Sort both relations by the join key (external merge sort if necessary)
-2. Merge the two sorted sequences, emitting matching pairs
+**Top-K** — `ORDER BY score DESC LIMIT 10` does *not* require sorting all N rows. Keep a max-heap (or min-heap) of size K, stream all N elements through it, and you have the K best in **O(N log K)** — for K ≪ N, dramatically faster than O(N log N). Every serious database does this when it can't get the order from an index; if your plan shows a full sort feeding a small LIMIT, the planner lost the top-K optimization (usually because the sort column isn't the leftmost index column — back to the trees chapter's leftmost-prefix rule).
 
-Total cost: O(N log N + M log M + N + M) I/Os where N and M are the sizes of the two relations. For large relations that don't fit in memory, this is optimal — no hash join can do better asymptotically, and sort-merge join produces sorted output as a side effect.
+**Approximate quantiles** — for unbounded streams, maintaining an exact order is impossible, but maintaining *approximate* percentiles within ε error is cheap: Greenwald-Khanna, KLL, t-digest, and DDSketch do it in tiny space. This is how Prometheus histograms, DataDog, and Netflix answer "what's the p99 across a billion events?" without storing the billion events. (See the statistics chapter, module 03, for the distribution side of this.)
 
-**Spark's shuffle.** A distributed sort. Each map task partitions its output by hash of the sort key into R partitions (one per reducer). Each reduce task fetches its partition from all map tasks (the "shuffle read") and sorts them — external merge sort if the partition doesn't fit in memory. The total data volume is O(N) regardless of the number of partitions; the challenge is coordinating the many-to-many network transfer efficiently. Spark's ExternalSorter uses spill-and-merge: when memory fills, sort the current buffer and spill to disk, then merge all spills at the end. This is external merge sort with the disk replaced by a mix of local disk and network.
+**Cache-oblivious sorting (Funnelsort)** — achieves optimal cache behavior across *every* level of the hierarchy simultaneously *without knowing the cache sizes*, via recursively nested K-way merge "funnels." It's mostly a research/columnar-DB technique, but it's the logical endpoint of the arrays-chapter obsession: arrange the computation so it's cache-optimal at L1, L2, L3, RAM, and disk all at once.
 
-### Approximate Sorting and Partial Ordering
+### Layer 8 — Sorting strings: comparison isn't free anymore
 
-Not all production sorting problems require a total order over all elements. Several important problems have more efficient solutions when approximate or partial answers suffice.
+Every algorithm above assumed comparison is O(1). For strings it isn't — comparing two strings is O(L) in their length, so a comparison sort becomes O(N·L·log N) *character* comparisons, and the log N factor is multiplied by potentially long strings.
 
-**Partial sort (top-K):** Return the K smallest elements, not necessarily sorted. Use a max-heap of size K: iterate through all N elements, push each onto the heap, pop the max whenever size exceeds K. After processing all elements, the heap contains the K smallest. O(N log K) time — for K << N, dramatically faster than full sort. This is `ORDER BY score DESC LIMIT 10` in a database: if the planner cannot use an index, it uses a top-K heap scan rather than sorting all rows.
+**MSD radix sort for strings** sidesteps the comparison entirely: bucket by the first character (256 buckets for ASCII), then recursively sort each bucket by the next character. Total work is O(N·L) worst case but in practice O(N + total distinguishing prefix length) — and for strings with *short* distinguishing prefixes (UUIDs, hashes, IPs, URLs sorted by domain), that's dramatically less than comparison sorting, because you stop looking at a string the moment it's uniquely placed. **Burst sort** is a cache-aware refinement that keeps a trie of prefixes in cache to avoid the pointer-chasing MSD radix can suffer.
 
-**Approximate sorting with quantiles:** For large streaming datasets, maintaining an exact sort order is infeasible. Maintaining approximate quantiles (within ε relative error) is feasible using Greenwald-Khanna or KLL (Karnin, Lang, Liberty) sketches in O(1/ε × log(1/ε)) space. Used in distributed monitoring systems (Prometheus histograms, DataDog DDSketch, Netflix's Percentile Streams) to answer "what is the p99 latency?" across billions of events without storing them all.
+**Suffix arrays** are the heavy artillery: sort *all suffixes* of a string (the core of full-text indexing) in O(N) via the DC3/skew algorithm. Paired with an LCP array, a suffix array answers arbitrary *substring* search in O(log N) — a different capability than a B-tree, which only does prefix queries. PostgreSQL's `pg_trgm` approximates this for trigram substring search.
 
-**Cache-oblivious sorting (Funnelsort):** An algorithm that achieves optimal cache behavior — O(N/B × log_M/B(N/B)) cache misses — without knowing the cache parameters M (cache size) or B (cache line size) in advance. Funnelsort uses a recursive "funnel" structure where K-way merges are performed by K/2 recursively nested funnels. The result is optimal for any cache hierarchy — L1, L2, L3, RAM, disk — simultaneously. Used in research systems; approaching production use in columnar databases where cache behavior is the dominant cost.
+## A Ladder From L1 to Principal
 
-### String Sorting: Radix vs Comparison vs Burst Sort
+- **L1 / new grad:** You know the sorts (quick, merge, heap, insertion) and their Big-O, and you use binary search on sorted data. You call `.sort()` and trust it.
+- **L3–L4 / solid engineer:** You know *why* the worst cases happen, that comparison sorts hit an N log N wall, that radix beats it for integers, and you write binary search without the overflow bug — and its lower/upper-bound variants.
+- **Senior:** You reason about stability (and the multi-key correctness bug), pick top-K heaps over full sorts, know Timsort exploits near-sorted data, and understand why your stdlib uses introsort/pdqsort. You see cache misses behind "O(log N) is slow here."
+- **Staff:** You connect sorting to systems — `work_mem` spills, sort-merge joins, the top-K plan optimization, quicksort-as-DoS on public endpoints — and you choose external merge sort and fan-in for out-of-core data.
+- **Principal:** You design data layouts and pipelines so the *dominant* operation is the cheap one — sequential I/O for external sort, cache-aware (Eytzinger/B-tree) layouts for search, radix for fixed-width keys, approximate sketches for streams. You treat "what does the input actually look like, on what hardware, against what adversary?" as the first question, and the algorithm falls out of the answer.
 
-Sorting strings requires special treatment because string comparison is O(L) where L is the string length — the O(N log N) comparison count becomes O(N L log N) character comparisons.
-
-**MSD (most-significant digit) radix sort for strings.** Sort by the first character into 256 buckets (for ASCII), then recursively sort each bucket by subsequent characters. Total work: O(N L) in the worst case (all strings share a long common prefix) but O(N + N × average_distinguishing_prefix_length) in practice. For strings with short distinguishing prefixes (URLs sorted by domain, IPs, UUIDs), MSD radix sort is dramatically faster than comparison sort.
-
-**Burst sort.** Cache-aware string sorting that avoids cache thrashing from MSD radix sort's pointer-chasing. Maintains a trie of prefixes; strings are stored in "buckets" at the trie leaves. When a bucket exceeds a threshold, it "bursts" into a new trie level. The trie fits in cache; strings are sorted within each bucket using a fast in-memory sort. Used in production string sorting for large English-language datasets.
-
-**Suffix arrays.** For sorting all suffixes of a string (the core operation in full-text indexing), the DC3/Skew algorithm sorts all N suffixes in O(N) time. Suffix arrays with LCP (longest common prefix) arrays enable O(log N) substring search in a text of length N — comparable to a B-tree index but for arbitrary substring queries, not just prefix queries. PostgreSQL's `pg_trgm` extension approximates this for trigram-based substring search.
-
----
+It's all the same handful of ideas — the comparison wall, the cache/I-O reality beneath the asymptotics, structure-in-the-input, and adversary-in-the-input — climbing from a `.sort()` call to the architecture of a query engine.
 
 ## Complexity Analysis
 
-| Algorithm | Best | Average | Worst | Space | Stable | Cache |
+| Algorithm | Best | Average | Worst | Space | Stable | Cache behavior |
 |---|---|---|---|---|---|---|
 | Insertion sort | O(N) | O(N²) | O(N²) | O(1) | Yes | Excellent |
 | Merge sort | O(N log N) | O(N log N) | O(N log N) | O(N) | Yes | Good |
-| Quicksort (random) | O(N log N) | O(N log N) | O(N²) w.p. negligible | O(log N) | No | Excellent |
+| Quicksort (random) | O(N log N) | O(N log N) | O(N²) (negligible prob.) | O(log N) | No | Excellent |
 | Heapsort | O(N log N) | O(N log N) | O(N log N) | O(1) | No | Poor |
 | Timsort | O(N) | O(N log N) | O(N log N) | O(N) | Yes | Excellent |
 | Introsort / pdqsort | O(N log N) | O(N log N) | O(N log N) | O(log N) | No | Excellent |
-| Counting sort | O(N + K) | O(N + K) | O(N + K) | O(K) | Yes | Good |
-| LSD radix sort | O(dN) | O(dN) | O(dN) | O(N + K) | Yes | Good |
-| Binary search | O(1) | O(log N) | O(log N) | O(1) | — | Poor (random) |
-| Branchless binary search | O(1) | O(log N) | O(log N) | O(1) | — | Better |
-| Quickselect (k-th element) | O(N) | O(N) | O(N²) | O(log N) | — | Good |
-| External merge sort | — | O(N/B × log_F(N/M)) I/Os | same | O(M) RAM | Yes | Optimal for disk |
+| Counting sort | O(N+K) | O(N+K) | O(N+K) | O(K) | Yes | Good |
+| LSD radix sort | O(dN) | O(dN) | O(dN) | O(N+K) | Yes | Good |
+| Binary search | O(1) | O(log N) | O(log N) | O(1) | — | Poor (random jumps) |
+| Branchless / Eytzinger search | O(1) | O(log N) | O(log N) | O(1) | — | Much better |
+| Quickselect (kth) | O(N) | O(N) | O(N²) | O(log N) | — | Good |
+| External merge sort | — | O(N/B · log_F(N/M)) I/Os | same | O(M) RAM | Yes | Optimal for disk |
 
-Note that "cache" column refers to practical performance on modern hardware, not asymptotic complexity. Poor cache behavior turns O(N log N) into a constant-factor loss of 2-5× versus an equivalent algorithm with better locality.
+The "cache behavior" column is the one the asymptotics omit and the one that decides wall-clock time: poor locality turns an O(N log N) algorithm into a 2–5× constant-factor loss versus an equal-complexity rival with good locality. Always read the complexity *and* the cache column.
 
----
+## War Stories (the shape of the bug in the wild)
+
+- **The endpoint a few kilobytes could melt.** A public API sorted user-supplied JSON keys with a deterministic-pivot quicksort. A crafted payload forced O(N²), pegged the CPU, and DoS'd the service — the sorting twin of hash flooding. Fix: the standard library's hardened sort (introsort/pdqsort) or a randomized pivot.
+- **The nine-year-old overflow.** `(lo + hi) / 2` overflowed for arrays > 2³⁰ elements — a bug that shipped in Java's standard library for nearly a decade. The one-character fix is `lo + (hi - lo) / 2`, and it still bites fresh code in every fixed-width-int language.
+- **The 2ms query that took 4 seconds.** A stale row-count estimate made the planner choose an in-memory sort over an index scan; the sort overflowed `work_mem`, spilled to disk, and the query exploded. The fix was `ANALYZE` (fix the estimate), but understanding *why* required knowing the sort spilled to external merge sort.
+- **The multi-key sort that scrambled itself.** Code sorted by amount, then by customer, using an *unstable* sort — so the amount order within each customer was randomly destroyed. Every test passed because every test used distinct keys. The fix: a stable sort, or a single composite-key comparator.
 
 ## Key Takeaways
 
-1. The Ω(N log N) lower bound applies to *comparisons*, not wall time. Algorithms achieving identical comparison counts can differ by 5× in wall time due to cache misses and branch mispredictions. Profile on your actual hardware and data distribution — don't optimize comparison counts in isolation.
-
-2. Timsort is optimal for real-world data because real-world data has structure. On uniformly random data, it behaves like merge sort. On nearly sorted data, it approaches O(N). If you're sorting records that arrive roughly in order (event logs, timestamped records, database rows inserted in sequence), Timsort will consistently outperform its O(N log N) bound.
-
-3. Quicksort with naïve pivot selection is a security vulnerability on public-facing APIs that sort user-controlled input. Use introsort (C++ `std::sort`) or pdqsort (Rust's `slice::sort_unstable`) which are O(N log N) worst case. Never use textbook quicksort with first-element or last-element pivot on adversarially controllable data.
-
-4. The binary search overflow bug (`(lo + hi) / 2`) is wrong in every language with fixed-width integers. The correct form is `lo + (hi - lo) / 2`. This matters for arrays larger than half INT_MAX — which exist in production systems today.
-
-5. For integer keys with bounded range, LSD radix sort achieves O(N) time with excellent constants. For 32-bit integers, 4-pass base-256 radix sort processes ~500M integers/second on modern hardware — competitive with the best comparison sorts and without any comparison overhead.
-
-6. External merge sort is the only viable algorithm when data exceeds RAM. Maximize fan-in (F = memory / (2 × block_size)) to minimize merge passes. For most production datasets on servers with 16-256GB RAM, two I/O passes (one for run generation, one for merging) are sufficient. Understand what algorithm your database uses for sort-merge joins and when it spills to disk (`work_mem` in PostgreSQL, `sort_buffer_size` in MySQL).
-
-7. `ORDER BY ... LIMIT K` queries should use a top-K heap (O(N log K)) not a full sort (O(N log N)). Every major database engine implements this. If your query planner is doing a full sort followed by a limit, it has lost the ability to use the top-K optimization — usually because the sort column is not the leftmost column in a composite index, or because the planner's cost estimate is wrong.
-
-8. String sorting is O(N L log N) with comparison sorts. For strings with short distinguishing prefixes (UUIDs, hashes, IPs), MSD radix sort in O(N L) is a significant improvement. For full-text substring search, suffix arrays enable O(log N) arbitrary substring lookups — a qualitatively different capability than B-tree prefix indexing.
-
----
+1. **The Ω(N log N) lower bound is about comparisons, not wall time.** Two algorithms with identical comparison counts can differ 5–10× in runtime from cache misses and branch mispredictions. Profile on your real hardware and data — don't optimize comparison counts in a vacuum.
+2. **Structured keys walk around the wall.** Integers/fixed-width keys with bounded range sort in O(N) with radix sort, often 2–3× faster than the best comparison sort. The N log N wall only stands for *general* comparison sorting.
+3. **Timsort wins on real data because real data has structure.** Near-sorted input → O(N); random input → O(N log N). Sorting timestamps, sequential IDs, or lightly-edited sorted data, Timsort consistently beats its own bound. Know your input distribution.
+4. **Naïve quicksort on adversary-controlled input is a DoS vulnerability.** Use introsort (C++ `std::sort`) or pdqsort (Rust `sort_unstable`) — O(N log N) worst case — never textbook first-element-pivot quicksort on public input.
+5. **`(lo + hi) / 2` is wrong in every fixed-width-int language.** Write `lo + (hi - lo) / 2`. And prefer `lower_bound`/`upper_bound` — they give you ranges and counts in O(log N), which is what databases actually need.
+6. **Search performance is cache performance.** Branchless binary search beats the branching version 1.5–3×; Eytzinger layout beats sorted-array binary search ~2× on identical comparison counts; SIMD linear scan beats both for N ≤ 64. The comparison is free; the fetch is the cost.
+7. **External merge sort is the only sane choice past RAM.** Maximize fan-in to minimize passes — two sequential passes sort a terabyte. Know what your database uses for sort-merge joins and when it spills (`work_mem`, `sort_buffer_size`).
+8. **Don't sort when you don't need a total order.** `ORDER BY ... LIMIT K` wants a top-K heap (O(N log K)); streaming percentiles want quantile sketches; the kth element wants quickselect (O(N)). Recognizing the weaker requirement is where the big wins are.
 
 ## Related Modules
 
-- `../../06-databases/02-indexing.md` — B+ tree sorted order as the foundation of range scans; external merge sort in sort-merge joins; the query planner's top-K heap optimization
-- `../../06-databases/03-query-planning.md` — how the planner chooses between index scan, sort-then-limit, and sequential scan based on K estimate and work_mem
-- `../03-trees-and-indexing.md` — Eytzinger layout binary search as the theoretical basis for B-tree cache behavior; skip lists as sorted structures with concurrent insertion
-- `../../09-performance-engineering/02-latency-analysis.md` — Timsort on nearly-sorted latency samples; quickselect for streaming percentile computation
-- `../02-probability-for-engineers.md` — reservoir sampling for approximate quantiles; the inspection paradox in profiler-observed sort behavior
+- `01-arrays-and-memory-layout.md` — every "cache behavior" claim here (sequential vs. random, branchless, Eytzinger, SIMD) is the arrays chapter cashed in; external sort is "sequential beats random" at the disk level
+- `02-hash-tables.md` — hash joins vs. sort-merge joins; quicksort-as-DoS is the exact twin of hash-flooding (performance-depends-on-input = security surface)
+- `03-trees-and-indexing.md` — B+ tree leaves *are* sorted order made persistent; Eytzinger is binary search with B-tree cache behavior; top-K relies on leftmost-prefix index order
+- `04-graphs-and-network-algorithms.md` — heaps (priority queues) power Dijkstra/Prim; Kruskal sorts edges first
+- `../01-mathematics-for-systems/03-statistics-for-performance.md` — approximate quantile sketches and percentile estimation, the distribution side of "top-K and p99"
+- `../06-databases/02-indexing.md` — external merge sort in sort-merge joins, the top-K heap plan, and when the planner spills a sort to disk
+- `../06-databases/03-query-planning.md` — how the planner chooses index scan vs. sort-then-limit based on cardinality estimates and `work_mem`

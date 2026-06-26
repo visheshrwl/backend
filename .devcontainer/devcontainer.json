@@ -24,6 +24,6 @@
       }
     }
   },
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential erlang && pip install -r .devcontainer/requirements.txt && pip install -e tooling/python/labkit",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential erlang libpq-dev && pip install -r .devcontainer/requirements.txt && pip install -e tooling/python/labkit && (cd tooling/node/labkit && npm install) && gem install --no-document pg redis && (cd tooling/rust/labkit && cargo build)",
   "remoteUser": "vscode"
 }

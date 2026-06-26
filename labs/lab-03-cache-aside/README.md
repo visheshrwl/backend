@@ -21,6 +21,11 @@ Postgres and Redis are already running and seeded when you launch the lab — in
 Codespaces/Gitpod they come up automatically; locally they start with
 `docker compose -f .devcontainer/docker-compose.yml up -d`.
 
+> **Available in 8 languages** — Python, Go, JavaScript, TypeScript, Ruby, Rust,
+> C++, and C. Each `<lang>/` folder has a `stub` to implement and a `solution`
+> for reference. The single-flight guard is written idiomatically per language
+> (a per-key mutex in threaded runtimes; an in-flight-promise map in Node).
+
 You never open a connection. The platform layer hands you ready clients:
 
 ```python

@@ -26,6 +26,60 @@
       "stub": "stub.go",
       "run": "go run ./solution",
       "testCmd": "go run stub.go"
+    },
+    {
+      "id": "javascript",
+      "label": "JavaScript",
+      "dir": "javascript",
+      "solution": "solution.js",
+      "stub": "stub.js",
+      "run": "node solution.js",
+      "testCmd": "node stub.js"
+    },
+    {
+      "id": "typescript",
+      "label": "TypeScript",
+      "dir": "typescript",
+      "solution": "solution.ts",
+      "stub": "stub.ts",
+      "run": "node --experimental-strip-types solution.ts",
+      "testCmd": "node --experimental-strip-types stub.ts"
+    },
+    {
+      "id": "ruby",
+      "label": "Ruby",
+      "dir": "ruby",
+      "solution": "solution.rb",
+      "stub": "stub.rb",
+      "run": "ruby solution.rb",
+      "testCmd": "ruby stub.rb"
+    },
+    {
+      "id": "rust",
+      "label": "Rust",
+      "dir": "rust",
+      "solution": "solution.rs",
+      "stub": "stub.rs",
+      "run": "cargo run --bin solution",
+      "testCmd": "cargo run --bin stub"
+    },
+    {
+      "id": "cpp",
+      "label": "C++",
+      "dir": "cpp",
+      "solution": "solution.cpp",
+      "stub": "stub.cpp",
+      "run": "gcc -c ../../../tooling/c/labkit.c -I../../../tooling/c -I$(pg_config --includedir) -o /tmp/labkit.o && g++ -std=c++20 solution.cpp /tmp/labkit.o -I../../../tooling/c -I$(pg_config --includedir) -lpq -lpthread -o /tmp/lab && /tmp/lab",
+      "testCmd": "gcc -c ../../../tooling/c/labkit.c -I../../../tooling/c -I$(pg_config --includedir) -o /tmp/labkit.o && g++ -std=c++20 stub.cpp /tmp/labkit.o -I../../../tooling/c -I$(pg_config --includedir) -lpq -lpthread -o /tmp/lab && /tmp/lab"
+    },
+    {
+      "id": "c",
+      "label": "C",
+      "dir": "c",
+      "solution": "solution.c",
+      "stub": "stub.c",
+      "run": "gcc solution.c ../../../tooling/c/labkit.c -I../../../tooling/c -I$(pg_config --includedir) -lpq -lpthread -o /tmp/lab && /tmp/lab",
+      "testCmd": "gcc stub.c ../../../tooling/c/labkit.c -I../../../tooling/c -I$(pg_config --includedir) -lpq -lpthread -o /tmp/lab && /tmp/lab"
     }
   ]
 }
