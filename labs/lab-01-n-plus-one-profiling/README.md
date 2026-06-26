@@ -16,6 +16,27 @@ The exact numbers depend on your machine, but the relative improvement will be c
 
 ---
 
+## Parts
+
+This lab is implemented in `python/` (`stub.py` to fill in, `solution.py` for
+reference, `test_lab.py` to validate). It has two parts:
+
+- **Part 1 — query-shape fixes:** implement `fetch_users_with_posts_join`
+  (1 query) and `fetch_users_with_posts_in_batch` (2 queries).
+- **Part 2 — DataLoader:** implement `PostDataLoader.load` / `_dispatch` so that
+  N async `load()` calls collapse into a single batched posts query — the
+  pattern used in GraphQL resolvers and any async N-to-1 resolution.
+
+Validate everything with:
+
+```bash
+cd python && python -m unittest test_lab.py
+```
+
+The walkthrough below explains the concepts; the runnable code lives in `python/`.
+
+---
+
 ## Prerequisites
 
 - Python 3.8+

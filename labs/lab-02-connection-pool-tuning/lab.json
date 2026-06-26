@@ -1,0 +1,24 @@
+{
+  "slug": "lab-02-connection-pool-tuning",
+  "title": "Connection Pool Tuning",
+  "summary": "Implement a thread-safe connection pool and measure how pool size shapes p50, p99, and throughput under concurrent load.",
+  "difficulty": "intermediate",
+  "estimatedMinutes": 45,
+  "infra": [],
+  "infraNote": "Runs on the Python standard library (threading + sleep simulate connection cost). No database or cloud setup.",
+  "module": "bsps/07-core-backend-engineering/02-connection-pooling",
+  "languages": [
+    {
+      "id": "python",
+      "label": "Python",
+      "dir": "python",
+      "version": "3.11",
+      "solution": "solution.py",
+      "stub": "stub.py",
+      "test": "test_lab.py",
+      "run": "python solution.py",
+      "implement": "python stub.py",
+      "testCmd": "python -m unittest test_lab.py"
+    }
+  ]
+}

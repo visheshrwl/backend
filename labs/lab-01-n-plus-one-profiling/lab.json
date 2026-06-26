@@ -1,0 +1,24 @@
+{
+  "slug": "lab-01-n-plus-one-profiling",
+  "title": "N+1 Query Profiling",
+  "summary": "Observe the N+1 query problem, fix it with JOIN and IN-batch, and measure the difference.",
+  "difficulty": "intermediate",
+  "estimatedMinutes": 30,
+  "infra": [],
+  "infraNote": "Runs on the Python standard library (SQLite in-memory). No database or cloud setup.",
+  "module": "bsps/07-core-backend-engineering/01-n-plus-one-query-problem",
+  "languages": [
+    {
+      "id": "python",
+      "label": "Python",
+      "dir": "python",
+      "version": "3.11",
+      "solution": "solution.py",
+      "stub": "stub.py",
+      "test": "test_lab.py",
+      "run": "python solution.py",
+      "implement": "python stub.py",
+      "testCmd": "python -m unittest test_lab.py"
+    }
+  ]
+}

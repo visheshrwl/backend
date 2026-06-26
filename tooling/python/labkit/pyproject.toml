@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "labkit"
+version = "0.1.0"
+description = "Zero-setup persistence + cache layer for the backend labs."
+requires-python = ">=3.9"
+dependencies = [
+    "psycopg[binary]>=3.1",
+    "redis>=5.0",
+]
+
+[tool.setuptools]
+packages = ["labkit"]

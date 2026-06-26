@@ -1,0 +1,24 @@
+{
+  "slug": "lab-03-cache-aside",
+  "title": "Cache-Aside with Postgres + Redis",
+  "summary": "Put a Redis cache-aside (lazy-loading) layer in front of Postgres, prove cache hits skip the database, and invalidate correctly on writes.",
+  "difficulty": "intermediate",
+  "estimatedMinutes": 40,
+  "infra": ["postgres", "redis"],
+  "infraNote": "Postgres and Redis are provisioned for you on launch — no connection strings, no setup. Import them with `from labkit import db, cache`.",
+  "module": "bsps/07-core-backend-engineering/03-caching-strategy",
+  "languages": [
+    {
+      "id": "python",
+      "label": "Python",
+      "dir": "python",
+      "version": "3.11",
+      "solution": "solution.py",
+      "stub": "stub.py",
+      "test": "test_lab.py",
+      "run": "python solution.py",
+      "implement": "python stub.py",
+      "testCmd": "python -m unittest test_lab.py"
+    }
+  ]
+}

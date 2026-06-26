@@ -1,0 +1,4 @@
+# Platform layer dependencies for labs that use Postgres / Redis.
+# Stdlib-only labs (lab-01, lab-02) do not import these.
+psycopg[binary]>=3.1
+redis>=5.0

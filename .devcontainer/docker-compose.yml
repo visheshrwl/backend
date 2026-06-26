@@ -1,0 +1,56 @@
+# Zero-setup lab environment.
+# Codespaces / Gitpod / `docker compose up` bring these up automatically.
+# Labs reach the services at the hostnames `postgres` and `redis` — no config.
+services:
+  workspace:
+    image: mcr.microsoft.com/devcontainers/python:3.11
+    command: sleep infinity
+    volumes:
+      - ..:/workspaces/backend:cached
+    working_dir: /workspaces/backend
+    environment:
+      # The platform shim (labkit) reads these — learners never set them.
+      DATABASE_URL: postgresql://labs:labs@postgres:5432/labs
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: labs
+      PGPASSWORD: labs
+      PGDATABASE: labs
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /workspaces/backend/tooling/python
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: labs
+      POSTGRES_PASSWORD: labs
+      POSTGRES_DB: labs
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labs -d labs"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

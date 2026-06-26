@@ -1,0 +1,26 @@
+image: gitpod/workspace-full
+
+tasks:
+  - name: services + labs
+    init: |
+      pip install -r .devcontainer/requirements.txt
+      pip install -e tooling/python/labkit
+    command: |
+      docker compose -f .devcontainer/docker-compose.yml up -d postgres redis
+      export DATABASE_URL="postgresql://labs:labs@localhost:5432/labs"
+      export REDIS_URL="redis://localhost:6379/0"
+      echo "Postgres + Redis are up. Stdlib labs need nothing extra."
+      echo "Run a lab:    cd labs/<lab>/python && python solution.py"
+      echo "Run tests:    python -m unittest test_lab.py"
+
+ports:
+  - port: 5432
+    visibility: private
+    onOpen: ignore
+  - port: 6379
+    visibility: private
+    onOpen: ignore
+
+vscode:
+  extensions:
+    - ms-python.python
