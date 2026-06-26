@@ -6,7 +6,7 @@
 #
 #   Run / validate:  ruby stub.rb
 #   Reference:        ruby solution.rb
-require_relative '../../../tooling/ruby/labkit'
+require_relative '../../../tooling/ruby/labkit/lib/labkit'
 
 USER_COUNT = 100
 POSTS_PER_USER = 5

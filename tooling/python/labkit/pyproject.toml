@@ -5,12 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "labkit"
 version = "0.1.0"
-description = "Zero-setup persistence + cache layer for the backend labs."
+description = "Zero-setup Postgres + Redis platform shim for the backend labs."
+readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Vishesh Rawal" }]
+keywords = ["labs", "postgres", "redis", "teaching"]
 dependencies = [
     "psycopg[binary]>=3.1",
     "redis>=5.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/visheshrwl/labkit-python"
 
 [tool.setuptools]
 packages = ["labkit"]

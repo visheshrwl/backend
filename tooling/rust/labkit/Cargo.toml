@@ -2,6 +2,12 @@
 name = "labkit"
 version = "0.1.0"
 edition = "2021"
+description = "Zero-setup Postgres + Redis platform shim for the backend labs."
+license = "Apache-2.0"
+repository = "https://github.com/visheshrwl/labkit-rust"
+readme = "README.md"
+keywords = ["labs", "postgres", "redis", "teaching"]
+categories = ["database"]
 
 [dependencies]
 postgres = "0.19"

@@ -7,7 +7,7 @@
 #             Labkit::DB.query_count, Labkit::CACHE.get_json(key),
 #             Labkit::CACHE.set_json(key, value, ttl), Labkit::CACHE.delete(key),
 #             Labkit::CACHE.exists?(key)
-require_relative '../../../tooling/ruby/labkit'
+require_relative '../../../tooling/ruby/labkit/lib/labkit'
 
 TTL = 60
 def user_key(id) = "user:#{id}"

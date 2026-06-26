@@ -1,7 +1,7 @@
 # Lab 03: Cache-Aside with Postgres + Redis — Ruby reference solution.
 #
 #   Run:  ruby solution.rb
-require_relative '../../../tooling/ruby/labkit'
+require_relative '../../../tooling/ruby/labkit/lib/labkit'
 
 TTL = 60
 def user_key(id) = "user:#{id}"

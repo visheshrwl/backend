@@ -1,7 +1,27 @@
 {
   "name": "labkit",
   "version": "0.1.0",
+  "description": "Zero-setup Postgres + Redis platform shim for the backend labs.",
   "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "keywords": [
+    "labs",
+    "postgres",
+    "redis",
+    "teaching"
+  ],
+  "author": "Vishesh Rawal",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/visheshrwl/labkit-node"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "pg": "^8.11.0",
     "redis": "^4.6.0"

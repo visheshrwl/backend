@@ -4,7 +4,7 @@
 # 101 -> 1 -> 2. Creates and seeds its own tables (n1_users, n1_posts).
 #
 #   Run:  ruby solution.rb
-require_relative '../../../tooling/ruby/labkit'
+require_relative '../../../tooling/ruby/labkit/lib/labkit'
 
 USER_COUNT = 100
 POSTS_PER_USER = 5
