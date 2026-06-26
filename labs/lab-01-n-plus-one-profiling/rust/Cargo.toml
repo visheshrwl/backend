@@ -1,0 +1,16 @@
+[package]
+name = "lab01"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+
+[dependencies]
+labkit = { path = "../../../tooling/rust/labkit" }
+
+[[bin]]
+name = "solution"
+path = "solution.rs"
+
+[[bin]]
+name = "stub"
+path = "stub.rs"

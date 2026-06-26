@@ -1,132 +1,90 @@
 #!/usr/bin/env python3
 """
-Lab 01: N+1 Query Profiling — YOUR TURN.
+Lab 01: N+1 Query Profiling — YOUR TURN (PostgreSQL).
 
-The N+1 baseline is given. Your job is to implement the fixes so they return
-identical data with far fewer queries:
+Runs against real Postgres through labkit. `db.query_count` is your proof: each
+query increments it, so the fixes must drive 101 -> 1 -> 2 round trips.
 
-  Part 1 — query-shape fixes:
+setup_dataset() (given) creates and seeds this lab's own tables (n1_users,
+n1_posts) — you never write connection or setup code. Implement the fetches:
+
+  Part 1:
     1. fetch_users_with_posts_join     -> exactly 1 query
-    2. fetch_users_with_posts_in_batch -> exactly 2 queries
+    2. fetch_users_with_posts_in_batch -> exactly 2 queries (use = ANY(%s))
+  Part 2:
+    3. PostDataLoader.load / _dispatch -> N async load() calls -> ONE posts query
 
-  Part 2 — the DataLoader pattern (GraphQL / async N-to-1 resolution):
-    3. PostDataLoader.load + _dispatch -> N async load() calls collapse into
-       ONE batched posts query
+Validate:
+  python -m unittest test_lab.py
+  python solution.py        # compare to the reference
 
-When all are done:
-  python -m unittest test_lab.py     # should pass
-  python solution.py                  # compare against the reference
-
-You never touch DB connections or setup — create_database() and the tracker
-are wired for you. Implement only the marked functions.
+labkit API: db.query(sql, params) -> list[dict];  db.execute(sql, params);
+            db.query_count (read counter);  db.reset_counters().
 """
 
 import asyncio
-import sqlite3
-import statistics
-import time
 from collections import defaultdict
 
+from labkit import db
 
-def create_database() -> sqlite3.Connection:
-    """In-memory SQLite database with users and posts tables. (given)"""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    cur.executescript("""
-        PRAGMA foreign_keys = ON;
-
-        CREATE TABLE users (
-            id   INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL
-        );
-
-        CREATE TABLE posts (
-            id      INTEGER PRIMARY KEY,
-            title   TEXT NOT NULL,
-            body    TEXT NOT NULL,
-            user_id INTEGER NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-
-        CREATE INDEX idx_posts_user_id ON posts(user_id);
-    """)
-
-    for i in range(1, 101):
-        cur.execute(
-            "INSERT INTO users VALUES (?, ?, ?)",
-            (i, f"User {i}", f"user{i}@example.com"),
-        )
-        for j in range(5):
-            cur.execute(
-                "INSERT INTO posts VALUES (?, ?, ?, ?)",
-                (
-                    i * 10 + j,
-                    f"Post {j+1} by User {i}",
-                    f"This is the body of post {j+1} written by user {i}. " * 3,
-                    i,
-                ),
-            )
-
-    conn.commit()
-    return conn
+USER_COUNT = 100
+POSTS_PER_USER = 5
 
 
-class QueryTracker:
-    """Counts queries executed. (given)"""
+def setup_dataset():
+    """Create + seed n1_users / n1_posts. (given)"""
+    db.execute("DROP TABLE IF EXISTS n1_posts")
+    db.execute("DROP TABLE IF EXISTS n1_users")
+    db.execute(
+        "CREATE TABLE n1_users (id INT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL)"
+    )
+    db.execute(
+        "CREATE TABLE n1_posts ("
+        " id INT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,"
+        " user_id INT NOT NULL REFERENCES n1_users(id))"
+    )
+    db.execute("CREATE INDEX idx_n1_posts_user_id ON n1_posts(user_id)")
+    db.execute(
+        "INSERT INTO n1_users "
+        "SELECT g, 'User ' || g, 'user' || g || '@example.com' "
+        "FROM generate_series(1, %s) g",
+        (USER_COUNT,),
+    )
+    db.execute(
+        "INSERT INTO n1_posts "
+        "SELECT u * 10 + p, 'Post ' || p || ' by User ' || u, 'body of post', u "
+        "FROM generate_series(1, %s) u, generate_series(0, %s) p",
+        (USER_COUNT, POSTS_PER_USER - 1),
+    )
+    db.reset_counters()
 
-    def __init__(self, conn: sqlite3.Connection):
-        self.conn = conn
-        self.count = 0
-        self.queries = []
 
-    def execute(self, sql: str, params=()) -> list:
-        self.count += 1
-        self.queries.append(sql.strip()[:80])
-        cur = self.conn.cursor()
-        cur.execute(sql, params)
-        return cur.fetchall()
-
-    def reset(self):
-        self.count = 0
-        self.queries.clear()
-
-
-def fetch_users_with_posts_n_plus_one(tracker: QueryTracker) -> list[dict]:
+def fetch_users_with_posts_n_plus_one() -> list[dict]:
     """The baseline you are fixing — 1 + N queries. (given)"""
-    users = tracker.execute("SELECT id, name, email FROM users")
+    users = db.query("SELECT id, name FROM n1_users ORDER BY id")
     result = []
     for user in users:
-        posts = tracker.execute(
-            "SELECT id, title FROM posts WHERE user_id = ?",
+        posts = db.query(
+            "SELECT id, title FROM n1_posts WHERE user_id = %s",
             (user["id"],),
         )
-        result.append({
-            "id": user["id"],
-            "name": user["name"],
-            "posts": [dict(p) for p in posts],
-        })
+        result.append({"id": user["id"], "name": user["name"], "posts": posts})
     return result
 
 
-def fetch_users_with_posts_join(tracker: QueryTracker) -> list[dict]:
+def fetch_users_with_posts_join() -> list[dict]:
     """
-    TODO: Return the same shape as the N+1 version using EXACTLY ONE query.
-
-    Hint: LEFT JOIN posts onto users, then regroup the flat rows into the
-    nested {id, name, posts: [...]} structure in Python.
+    TODO: same shape as the N+1 version in EXACTLY ONE query.
+    Hint: LEFT JOIN n1_posts onto n1_users, then regroup the flat rows in Python.
     """
     raise NotImplementedError("Implement fetch_users_with_posts_join")
 
 
-def fetch_users_with_posts_in_batch(tracker: QueryTracker) -> list[dict]:
+def fetch_users_with_posts_in_batch() -> list[dict]:
     """
-    TODO: Return the same shape using EXACTLY TWO queries.
-
-    Hint: query 1 -> all users; query 2 -> all posts WHERE user_id IN (...);
-    then group posts by user_id in Python.
+    TODO: same shape in EXACTLY TWO queries.
+    Hint: query 1 -> users; query 2 -> SELECT ... WHERE user_id = ANY(%s) passing
+    the list of user ids; then group posts by user_id in Python.
     """
     raise NotImplementedError("Implement fetch_users_with_posts_in_batch")
 
@@ -134,15 +92,9 @@ def fetch_users_with_posts_in_batch(tracker: QueryTracker) -> list[dict]:
 # ── Part 2 — DataLoader ──────────────────────────────────────────────
 
 class PostDataLoader:
-    """
-    Batch N async post lookups into ONE query.
+    """Batch N async post lookups into ONE query."""
 
-    TODO: implement load() and _dispatch() so that calling load() once per user
-    (see fetch_users_with_posts_dataloader) results in a single posts query.
-    """
-
-    def __init__(self, tracker: QueryTracker):
-        self.tracker = tracker
+    def __init__(self):
         self._queue: list[int] = []
         self._futures: dict[int, asyncio.Future] = {}
         self._scheduled = False
@@ -150,11 +102,10 @@ class PostDataLoader:
     async def load(self, user_id: int) -> list[dict]:
         """
         TODO:
-          1. Create a future on the running loop; store it in self._futures[user_id].
+          1. Create a future on the loop; store it in self._futures[user_id].
           2. Append user_id to self._queue.
-          3. The first call schedules _dispatch on the next tick:
-             loop.call_soon(lambda: asyncio.ensure_future(self._dispatch()))
-             (guard with self._scheduled so it only schedules once).
+          3. The first call schedules _dispatch on the next tick (guard with
+             self._scheduled): loop.call_soon(lambda: asyncio.ensure_future(self._dispatch())).
           4. return await future
         """
         raise NotImplementedError("Implement PostDataLoader.load")
@@ -162,18 +113,17 @@ class PostDataLoader:
     async def _dispatch(self):
         """
         TODO:
-          1. Deduplicate self._queue into user_ids; clear the queue; reset _scheduled.
-          2. Run ONE query: SELECT id, title, user_id FROM posts WHERE user_id IN (...).
-          3. Group rows by user_id, then resolve each future with its user's posts
-             (use [] for users with no posts).
+          1. Deduplicate self._queue into user_ids; clear queue; reset _scheduled.
+          2. Run ONE query: SELECT id, title, user_id FROM n1_posts WHERE user_id = ANY(%s).
+          3. Group rows by user_id and resolve each future ([] if a user has none).
         """
         raise NotImplementedError("Implement PostDataLoader._dispatch")
 
 
-async def fetch_users_with_posts_dataloader(tracker: QueryTracker) -> list[dict]:
-    """Wiring is given — implement PostDataLoader above to make this 2 queries total."""
-    users = tracker.execute("SELECT id, name FROM users")
-    loader = PostDataLoader(tracker)
+async def fetch_users_with_posts_dataloader() -> list[dict]:
+    """Wiring is given — implement PostDataLoader to make this 2 queries total."""
+    users = db.query("SELECT id, name FROM n1_users ORDER BY id")
+    loader = PostDataLoader()
     posts_lists = await asyncio.gather(*[loader.load(u["id"]) for u in users])
     return [
         {"id": u["id"], "name": u["name"], "posts": posts}
@@ -181,35 +131,19 @@ async def fetch_users_with_posts_dataloader(tracker: QueryTracker) -> list[dict]
     ]
 
 
-def benchmark(fn, tracker: QueryTracker, runs: int = 5) -> dict:
-    times = []
-    query_count = 0
-    for _ in range(runs):
-        tracker.reset()
-        start = time.perf_counter()
-        fn(tracker)
-        times.append((time.perf_counter() - start) * 1000)
-        query_count = tracker.count
-    return {
-        "p50_ms": statistics.median(times),
-        "queries": query_count,
-    }
-
-
 def main():
-    conn = create_database()
-    tracker = QueryTracker(conn)
+    setup_dataset()
     for name, fn in [
         ("N+1 (naive)", fetch_users_with_posts_n_plus_one),
         ("JOIN (eager)", fetch_users_with_posts_join),
-        ("IN batch", fetch_users_with_posts_in_batch),
+        ("IN batch (ANY)", fetch_users_with_posts_in_batch),
     ]:
+        db.reset_counters()
         try:
-            s = benchmark(fn, tracker)
-            print(f"{name:<20} queries={s['queries']:>4}  p50={s['p50_ms']:.2f}ms")
+            rows = fn()
+            print(f"{name:<16} -> {len(rows)} users in {db.query_count} queries")
         except NotImplementedError as e:
-            print(f"{name:<20} not implemented yet ({e})")
-    conn.close()
+            print(f"{name:<16} -> not implemented ({e})")
 
 
 if __name__ == "__main__":

@@ -5,20 +5,81 @@
   "difficulty": "intermediate",
   "estimatedMinutes": 45,
   "infra": [],
-  "infraNote": "Runs on the Python standard library (threading + sleep simulate connection cost). No database or cloud setup.",
+  "infraNote": "Pure concurrency primitives (threads/async + sleep simulate connection cost). No database or cloud setup, in any language.",
   "module": "bsps/07-core-backend-engineering/02-connection-pooling",
   "languages": [
     {
       "id": "python",
       "label": "Python",
       "dir": "python",
-      "version": "3.11",
       "solution": "solution.py",
       "stub": "stub.py",
       "test": "test_lab.py",
       "run": "python solution.py",
-      "implement": "python stub.py",
       "testCmd": "python -m unittest test_lab.py"
+    },
+    {
+      "id": "go",
+      "label": "Go",
+      "dir": "go",
+      "solution": "solution/solution.go",
+      "stub": "stub.go",
+      "run": "go run ./solution",
+      "testCmd": "go run stub.go"
+    },
+    {
+      "id": "javascript",
+      "label": "JavaScript",
+      "dir": "javascript",
+      "solution": "solution.js",
+      "stub": "stub.js",
+      "run": "node solution.js",
+      "testCmd": "node stub.js"
+    },
+    {
+      "id": "typescript",
+      "label": "TypeScript",
+      "dir": "typescript",
+      "solution": "solution.ts",
+      "stub": "stub.ts",
+      "run": "node --experimental-strip-types solution.ts",
+      "testCmd": "node --experimental-strip-types stub.ts"
+    },
+    {
+      "id": "rust",
+      "label": "Rust",
+      "dir": "rust",
+      "solution": "solution.rs",
+      "stub": "stub.rs",
+      "run": "rustc -O solution.rs -o /tmp/lab02_rs && /tmp/lab02_rs",
+      "testCmd": "rustc -O stub.rs -o /tmp/lab02_stub && /tmp/lab02_stub"
+    },
+    {
+      "id": "ruby",
+      "label": "Ruby",
+      "dir": "ruby",
+      "solution": "solution.rb",
+      "stub": "stub.rb",
+      "run": "ruby solution.rb",
+      "testCmd": "ruby stub.rb"
+    },
+    {
+      "id": "cpp",
+      "label": "C++",
+      "dir": "cpp",
+      "solution": "solution.cpp",
+      "stub": "stub.cpp",
+      "run": "g++ -std=c++20 -O2 -pthread solution.cpp -o /tmp/lab02_cpp && /tmp/lab02_cpp",
+      "testCmd": "g++ -std=c++20 -O2 -pthread stub.cpp -o /tmp/lab02_stub && /tmp/lab02_stub"
+    },
+    {
+      "id": "c",
+      "label": "C",
+      "dir": "c",
+      "solution": "solution.c",
+      "stub": "stub.c",
+      "run": "gcc -O2 -pthread solution.c -o /tmp/lab02_c && /tmp/lab02_c",
+      "testCmd": "gcc -O2 -pthread stub.c -o /tmp/lab02_stub && /tmp/lab02_stub"
     }
   ]
 }

@@ -4,21 +4,28 @@
   "summary": "Observe the N+1 query problem, fix it with JOIN and IN-batch, and measure the difference.",
   "difficulty": "intermediate",
   "estimatedMinutes": 30,
-  "infra": [],
-  "infraNote": "Runs on the Python standard library (SQLite in-memory). No database or cloud setup.",
+  "infra": ["postgres"],
+  "infraNote": "Postgres is provisioned for you on launch — no connection strings, no setup. The lab creates and seeds its own tables via `from labkit import db`.",
   "module": "bsps/07-core-backend-engineering/01-n-plus-one-query-problem",
   "languages": [
     {
       "id": "python",
       "label": "Python",
       "dir": "python",
-      "version": "3.11",
       "solution": "solution.py",
       "stub": "stub.py",
       "test": "test_lab.py",
       "run": "python solution.py",
-      "implement": "python stub.py",
       "testCmd": "python -m unittest test_lab.py"
+    },
+    {
+      "id": "go",
+      "label": "Go",
+      "dir": "go",
+      "solution": "solution/solution.go",
+      "stub": "stub.go",
+      "run": "go run ./solution",
+      "testCmd": "go run stub.go"
     }
   ]
 }

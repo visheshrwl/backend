@@ -18,8 +18,11 @@ The exact numbers depend on your machine, but the relative improvement will be c
 
 ## Parts
 
-This lab is implemented in `python/` (`stub.py` to fill in, `solution.py` for
-reference, `test_lab.py` to validate). It has two parts:
+This lab runs against **real PostgreSQL** (provisioned for you — `from labkit
+import db`), so the query count maps to real database round trips. It creates and
+seeds its own tables (`n1_users`, `n1_posts`); `db.query_count` is the instrument
+that proves 101 → 1 → 2. Implemented in `python/` (`stub.py` to fill in,
+`solution.py` for reference, `test_lab.py` to validate). Two parts:
 
 - **Part 1 — query-shape fixes:** implement `fetch_users_with_posts_join`
   (1 query) and `fetch_users_with_posts_in_batch` (2 queries).

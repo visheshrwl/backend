@@ -1,0 +1,24 @@
+# Secrets — never commit real credentials. .env.example is the safe template.
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / TypeScript
+node_modules/
+dist/
+
+# Rust / compiled artifacts
+target/
+*.o
+*.out
+a.out
+
+# OS / editor
+.DS_Store

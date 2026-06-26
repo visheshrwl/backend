@@ -4,6 +4,12 @@
 
 Understand how connection pool size affects throughput and latency under concurrent load. You will benchmark four configurations: no pool, pool too small, pool optimal, and pool too large.
 
+> **Available in 8 languages.** Each `<lang>/` folder has a `stub` you implement
+> and a `solution` for reference: Python, Go, JavaScript, TypeScript, Rust, Ruby,
+> C++, and C. Implement `acquire`/`release`; the embedded checks verify reuse, a
+> timeout when exhausted, and that the pool never exceeds `maxSize`. Pick the tab
+> for your language in the lab console, or run the `testCmd` from `lab.json`.
+
 **Expected outcomes:**
 
 | Configuration | p50 | p99 | Throughput |

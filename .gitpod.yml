@@ -3,15 +3,14 @@ image: gitpod/workspace-full
 tasks:
   - name: services + labs
     init: |
-      pip install -r .devcontainer/requirements.txt
-      pip install -e tooling/python/labkit
+      pip install -r .devcontainer/requirements.txt || true
+      pip install -e tooling/python/labkit || true
     command: |
       docker compose -f .devcontainer/docker-compose.yml up -d postgres redis
       export DATABASE_URL="postgresql://labs:labs@localhost:5432/labs"
       export REDIS_URL="redis://localhost:6379/0"
-      echo "Postgres + Redis are up. Stdlib labs need nothing extra."
-      echo "Run a lab:    cd labs/<lab>/python && python solution.py"
-      echo "Run tests:    python -m unittest test_lab.py"
+      echo "Toolchains: gitpod/workspace-full ships Python, Go, Node, Ruby, Rust, gcc/g++."
+      echo "Run a lab:    cd labs/<lab>/<language> && see lab.json for run/test commands"
 
 ports:
   - port: 5432
@@ -24,3 +23,5 @@ ports:
 vscode:
   extensions:
     - ms-python.python
+    - golang.go
+    - rust-lang.rust-analyzer
