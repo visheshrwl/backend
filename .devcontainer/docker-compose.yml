@@ -1,9 +1,11 @@
-# Zero-setup lab environment.
-# Codespaces / Gitpod / `docker compose up` bring these up automatically.
-# Labs reach the services at the hostnames `postgres` and `redis` — no config.
+# Shared services for the labs (postgres + redis) plus a language-agnostic
+# workspace. Each .devcontainer/<language>/devcontainer.json layers ONLY that
+# language's toolchain on top of this workspace — so a JavaScript learner never
+# gets a Ruby/Rust/Go install. Labs reach the services at hostnames `postgres`
+# and `redis` — no config.
 services:
   workspace:
-    image: mcr.microsoft.com/devcontainers/python:3.11
+    image: mcr.microsoft.com/devcontainers/base:ubuntu
     command: sleep infinity
     volumes:
       - ..:/workspaces/backend:cached

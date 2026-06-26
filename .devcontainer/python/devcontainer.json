@@ -1,0 +1,15 @@
+{
+  "name": "backend-labs · Python",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspaces/backend",
+  "forwardPorts": [5432, 6379],
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.11" }
+  },
+  "postCreateCommand": "pip install -r .devcontainer/requirements.txt && pip install -e tooling/python/labkit",
+  "customizations": {
+    "vscode": { "extensions": ["ms-python.python"] }
+  },
+  "remoteUser": "vscode"
+}

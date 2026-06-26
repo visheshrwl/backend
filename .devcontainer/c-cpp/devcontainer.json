@@ -1,0 +1,12 @@
+{
+  "name": "backend-labs · C / C++",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspaces/backend",
+  "forwardPorts": [5432, 6379],
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential libpq-dev",
+  "customizations": {
+    "vscode": { "extensions": ["ms-vscode.cpptools"] }
+  },
+  "remoteUser": "vscode"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "backend-labs · Node (JavaScript / TypeScript)",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspaces/backend",
+  "forwardPorts": [5432, 6379],
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" }
+  },
+  "postCreateCommand": "cd tooling/node/labkit && npm install",
+  "customizations": {
+    "vscode": { "extensions": ["dbaeumer.vscode-eslint"] }
+  },
+  "remoteUser": "vscode"
+}

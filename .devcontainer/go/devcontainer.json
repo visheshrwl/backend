@@ -1,0 +1,14 @@
+{
+  "name": "backend-labs · Go",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspaces/backend",
+  "forwardPorts": [5432, 6379],
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.22" }
+  },
+  "customizations": {
+    "vscode": { "extensions": ["golang.go"] }
+  },
+  "remoteUser": "vscode"
+}

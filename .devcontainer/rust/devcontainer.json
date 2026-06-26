@@ -1,0 +1,15 @@
+{
+  "name": "backend-labs · Rust",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspaces/backend",
+  "forwardPorts": [5432, 6379],
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {}
+  },
+  "postCreateCommand": "cd tooling/rust/labkit && cargo build",
+  "customizations": {
+    "vscode": { "extensions": ["rust-lang.rust-analyzer"] }
+  },
+  "remoteUser": "vscode"
+}
