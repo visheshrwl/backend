@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: labkit
-Version: 0.1.0
-Summary: Zero-setup persistence + cache layer for the backend labs.
-Requires-Python: >=3.9
-Requires-Dist: psycopg[binary]>=3.1
-Requires-Dist: redis>=5.0
