@@ -17,83 +17,26 @@ The answer is the whole chapter. A connection is not free — not to create, and
 
 ## In this chapter you will learn
 
-- **Why a database connection is expensive** — the TCP + TLS + auth handshake, and why Postgres connections are especially precious.
-- **What a connection pool is** and how it turns "one connection per query" from a bottleneck into throughput.
-- The real **`pgxpool` setup**, setting by setting.
-- **How to size a pool** — the math, the fleet-wide trap, and why bigger is *not* faster.
-- Using the pool correctly, and the **#1 production bug: the connection leak**.
-- **Transactions**, **query cancellation** via context, and the classic **N+1 problem**.
-- **Pool exhaustion** — how to see it coming and what causes it.
+- The real **`pgxpool` setup**, setting by setting — the Go-specific knobs and why each exists.
+- How Go's pooling defaults map onto the **sizing math and fleet ceiling** (with the derivation in the backend guide).
+- Using the pool correctly, and the **#1 production bug in Go services: the connection leak** (`defer rows.Close()`).
+- **Transactions** and the `defer tx.Rollback(ctx)` idiom, plus **query cancellation** through `context`.
+- Killing the classic **N+1 problem** with `pgx` batching (`WHERE id = ANY($1)`).
+- Reading **pool exhaustion** off `pgxpool`'s live `Stat()` metrics.
+
+> **Prerequisite — read the first-principles chapter first.** The *why* behind everything here — the cost of a connection (TCP + TLS + auth handshake, Postgres's process-per-connection model), the queueing theory that sizes a pool, LIFO reuse, PgBouncer, and the serverless proxy story — lives in the backend guide, language-agnostic: **[Connection Pooling](/backend-guide/bsps/07-core-backend-engineering/02-connection-pooling)**. This chapter assumes that cost model and focuses on *how you express it in Go with `pgx`*.
 
 ---
 
-## Part 1 — Why a Connection Is Expensive
+## Part 1 — The Cost Model, in One Paragraph
 
-Before we pool anything, let's understand what we're conserving. What *actually happens* when your Go program opens a connection to PostgreSQL? Walk through it, because every pooling decision later is a reaction to this cost.
+You should already have this from the [Connection Pooling](/backend-guide/bsps/07-core-backend-engineering/02-connection-pooling) chapter, so just the shape: a fresh Postgres connection costs a **TCP + TLS + auth round-trip chain** (single-digit ms on a LAN, tens of ms across a boundary) to *establish*, and — the Postgres-specific killer — a **forked OS process (~5–10 MB)** to *hold*. That process cost is why `max_connections` defaults to **100** and why the answer is never "give every request its own connection." Instead you open a handful once, keep them alive, and **borrow and return** them across thousands of requests. That is a pool, and the rest of this chapter is how Go does it.
 
-```
-YOUR APP                                          POSTGRES SERVER
-   │                                                     │
-   │  1. TCP handshake (SYN, SYN-ACK, ACK) ─────────────►│   ~1 round trip
-   │                                                     │
-   │  2. TLS handshake (certs, key exchange) ───────────►│   ~1-2 round trips
-   │  ◄──────────────────────────────────────────────── │   (if TLS, which prod uses)
-   │                                                     │
-   │  3. Postgres startup message (user, db) ───────────►│
-   │  ◄──── auth challenge (SCRAM / password) ────────── │   ~1-2 round trips
-   │  4. auth response ─────────────────────────────────►│
-   │  ◄──── authentication ok, backend ready ─────────── │
-   │                                                     │
-   │                                          5. POSTGRES FORKS A
-   │                                             NEW OS PROCESS for
-   │                                             this connection
-   │                                             (~5-10 MB RAM)
-   │                                                     │
-   │  ═══ finally ready to run a query ═════════════════ │
-```
-
-Two costs, and both are brutal if you pay them per query:
-
-1. **Latency to establish.** Steps 1–4 are a series of network round trips — TCP, then TLS (which production always uses), then the Postgres authentication exchange (SCRAM adds round trips). On a same-datacenter link that's easily **several milliseconds**; across a network boundary it can be **tens of milliseconds**. If your handler opens a fresh connection for a query that itself takes 1 ms, you just spent 20× the query's cost on *setup*. Do that per request and your latency is dominated by handshakes, not work.
-
-2. **Memory on the server — this is the Postgres-specific killer.** PostgreSQL uses a **process-per-connection** model: for every connection, the server **forks a full OS process** (not a thread — a process). Each backend process consumes several megabytes of RAM at baseline, plus more for its work memory. This is why `max_connections` in Postgres defaults to a mere **100**, and why pushing it to thousands doesn't work — you'd run the server out of memory and drown it in process-scheduling overhead.
-
-> **Note — the number that governs everything:** `max_connections` on your Postgres server is a **hard, fleet-wide ceiling**. Every connection from every one of your app instances, plus your migrations, your admin tools, your monitoring, and your read replicas' consumers, must fit under it. This one number is the constraint that pool sizing exists to respect. Write it on the wall.
-
-So the conclusion writes itself: **opening a connection per query is catastrophic**, and Postgres can't give you many connections anyway. We need to open a handful of connections *once*, keep them alive, and reuse them across thousands of requests. That is a pool.
+> **The one number to write on the wall:** `max_connections` is a **hard, fleet-wide ceiling** — every pool on every app instance, plus migrations, admin tools, and monitoring, shares it. It is the constraint every sizing decision below answers to.
 
 ---
 
-## Part 2 — What a Connection Pool Is
-
-A connection pool is a fixed-size set of already-established, ready-to-use connections that your requests **borrow and return** — they never open or close a connection themselves.
-
-```
-                        CONNECTION POOL (MaxConns = 5)
-                  ┌─────────────────────────────────────────┐
-   requests ────► │  [conn1: IN USE]  [conn2: IN USE]        │ ────► POSTGRES
-   (goroutines)   │  [conn3: IDLE]    [conn4: IDLE]          │       (5 backend
-                  │  [conn5: IDLE]                           │        processes,
-                  └─────────────────────────────────────────┘        reused)
-                        ▲                          │
-                        │  acquire (borrow)        │  release (return)
-                        └──────────────────────────┘
-                     when all 5 are IN USE, the 6th request WAITS
-```
-
-The lifecycle of a single query through the pool:
-
-1. **Acquire** — borrow an idle connection (or wait if none are free).
-2. **Use** — run your query on it.
-3. **Release** — return it to the pool *idle* (the connection stays open, ready for the next borrower).
-
-The connection is **never closed** at step 3 — that's the entire point. The expensive handshake from Part 1 happens once, when the pool first fills, and then that connection serves query after query after query. A pool of 5 connections can serve millions of requests over its lifetime.
-
-> **Tip — the mental shift:** stop thinking "a request needs a connection" and start thinking "a request needs a connection *for the few milliseconds it's actually querying*." A request that spends 5 ms querying and 50 ms doing other work only holds a connection for that 5 ms. This is why a **small** pool serves a **large** number of concurrent requests — connections are held briefly and recycled constantly. Hold them longer than necessary (a leak, a long transaction, a slow query) and the whole model breaks.
-
----
-
-## Part 3 — Setting Up the Pool with pgx
+## Part 2 — Setting Up the Pool with pgx
 
 In Go, two layers exist for Postgres. Know both:
 
@@ -121,7 +64,7 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
         return nil, fmt.Errorf("parse db config: %w", err)
     }
 
-    // --- Pool sizing (Part 4 explains these numbers) ---
+    // --- Pool sizing (Part 3 explains these numbers) ---
     cfg.MaxConns = 10                       // max open connections in this pool
     cfg.MinConns = 2                        // keep a few warm so bursts don't pay the handshake
 
@@ -149,7 +92,7 @@ Each knob, and why it exists:
 
 | Setting | What it controls | Why you set it |
 |---|---|---|
-| `MaxConns` | Ceiling on open connections in **this** pool | The single most important knob. Too low = requests queue; too high = you overwhelm Postgres. See Part 4. |
+| `MaxConns` | Ceiling on open connections in **this** pool | The single most important knob. Too low = requests queue; too high = you overwhelm Postgres. See Part 3. |
 | `MinConns` | Connections kept warm even when idle | Avoids paying the handshake on the first request after a quiet period; smooths bursts. |
 | `MaxConnLifetime` | Max age before a connection is recycled | Prevents connections from living forever; sidesteps slow memory creep and stale server-side state. |
 | `MaxConnLifetimeJitter` | Randomness added to lifetime | So all connections don't hit `MaxConnLifetime` **at the same instant** and reconnect in a thundering herd. |
@@ -160,52 +103,27 @@ Each knob, and why it exists:
 
 ---
 
-## Part 4 — Sizing the Pool (the Counterintuitive Math)
+## Part 3 — Sizing `MaxConns`
 
-Here is the question that trips up almost everyone: **how big should the pool be?** The instinct is "bigger = faster." The instinct is **wrong**, and understanding why is the most valuable thing in this chapter.
+The full derivation — why bigger is *not* faster, the `(cores × 2) + spindles` heuristic, the M/M/c queueing model, Little's Law, and the PgBouncer story — is in the backend guide's [Connection Pooling](/backend-guide/bsps/07-core-backend-engineering/02-connection-pooling#underlying-theory-os-cn-dsa-math-linkage) chapter. Here is just how those results land on the two `pgxpool` numbers you set in Part 2.
 
-### Bigger is not faster
+**`MaxConns` should be small.** A single Postgres box with 8 cores on SSD wants roughly **~16–20 total** connections; past that, queries fight over cores and total throughput *drops*. Little's Law gives you the target directly: `concurrency = throughput × latency`, so 2,000 QPS of 5 ms queries needs only `2000 × 0.005 = 10` connections — and a query that slows to 50 ms suddenly needs **100** for the same load. In Go terms: a slow query silently multiplies your `MaxConns` demand, so keeping queries fast *is* keeping the pool healthy.
 
-Postgres processes queries with a finite number of CPU cores and disks. If you have 8 cores and you throw 200 concurrent connections at it, those 200 queries don't run in parallel — they fight over 8 cores, thrashing the CPU with context switches, contending for locks, and each running *slower*. Beyond a point, **adding connections decreases total throughput** because the server spends its time coordinating instead of working.
-
-A widely-used starting heuristic for a single database:
+**The Go-specific trap: `MaxConns` is per-process, and you run many processes.** Each pod builds its own `pgxpool`, so your real load on Postgres is:
 
 ```
-connections ≈ (number_of_cpu_cores × 2) + effective_number_of_disks
+   total connections  =  pod_count  ×  MaxConns   (+ migrations, admin, monitoring)
+
+   e.g.  10 pods × 20  =  200  needed   vs   100  available  ⇒  Postgres refuses connections
 ```
 
-For an 8-core Postgres box on SSD, that's roughly **~16–20 connections total** — often far fewer than people guess. This is a *starting point*, not a law; you tune from there with real measurements. But the shape of the truth holds: the right pool is **small**.
+This bites hardest exactly when you scale up under load: the orchestrator adds pods, each new pool grabs its `MaxConns`, and you blow past `max_connections` — taking down the pods you just added.
 
-### The fleet-wide trap (the one that causes outages)
-
-Now the trap that gets teams in production. Your `MaxConns` is **per pool**, and each app instance has its own pool. So:
-
-```
-total DB connections  =  number_of_app_instances  ×  MaxConns_per_instance
-```
-
-This must stay under Postgres `max_connections` (minus headroom for migrations, admin, monitoring). Watch how this bites:
-
-```
-   MaxConns = 20 per pod,  Postgres max_connections = 100
-
-   10 pods  × 20  =  200 connections  needed
-                     100               available
-                     ─────────────────────────────
-                     ⛔ Postgres refuses connections; requests fail
-```
-
-The killer part: this often appears **when you scale up to handle load**. Traffic spikes, your orchestrator adds pods, and each new pod's pool tries to grab 20 more connections — until you blow past `max_connections` and Postgres starts **refusing new connections**, taking down the very pods you added to help. Autoscaling and a naive pool size are a loaded gun.
-
-> **Warning — do the fleet math before you set `MaxConns`.** The formula that must always hold: `max_pods × MaxConns + reserved < postgres_max_connections`. If you autoscale to 30 pods, and Postgres allows 100 connections, your per-pod `MaxConns` cannot exceed ~3. When that math gets impossible — when you have too many app instances for direct connections — you put a connection proxy like **PgBouncer** between your apps and Postgres. PgBouncer multiplexes thousands of client connections onto a small number of real Postgres connections (transaction pooling), decoupling your pod count from your Postgres connection count. That's the standard answer at scale.
-
-### The framing that makes sizing intuitive
-
-Little's Law connects the pieces: `concurrency = throughput × latency`. If each query holds a connection for 5 ms (`0.005 s`) and you need 2,000 queries/second of throughput, the concurrency you need is `2000 × 0.005 = 10` connections. That's it — 10 connections sustain 2,000 QPS *if* queries stay fast. Notice the lever: if a query slows from 5 ms to 50 ms, you suddenly need **100** connections for the same throughput. **Slow queries don't just hurt themselves — they multiply your connection demand and drain the pool.** Keeping queries fast is keeping the pool healthy.
+> **Warning — do the fleet math before you set `MaxConns`.** The invariant: `max_pods × MaxConns + reserved < postgres_max_connections`. Autoscale to 30 pods against a 100-connection Postgres and your per-pod `MaxConns` cannot exceed ~3. When that math becomes impossible, you stop connecting pods directly and put **PgBouncer** (transaction pooling) in front — see the [backend-guide treatment](/backend-guide/bsps/07-core-backend-engineering/02-connection-pooling#when-not-to-pool) for how the proxy decouples pod count from connection count.
 
 ---
 
-## Part 5 — Using the Pool Correctly (and the #1 Bug)
+## Part 4 — Using the Pool Correctly (and the #1 Bug)
 
 For most queries, the pool handles acquire/release for you. These convenience methods borrow a connection, run the query, and return it automatically:
 
@@ -271,7 +189,7 @@ Because `ctx` reaches Postgres, a cancelled request stops wasting a connection *
 
 ---
 
-## Part 6 — Transactions
+## Part 5 — Transactions
 
 A transaction groups statements so they succeed or fail together. The production pattern has one subtlety worth internalizing — the `defer rollback` idiom:
 
@@ -311,9 +229,9 @@ func (r *Repo) Transfer(ctx context.Context, from, to int64, cents int64) error 
 
 ---
 
-## Part 7 — The N+1 Problem (the Most Common DB Perf Bug)
+## Part 6 — Killing N+1 with `pgx` Batching
 
-This one is worth a section of its own because you *will* meet it, in every codebase, forever. The **N+1 query problem**: you run 1 query to get a list, then loop and run 1 query *per item* — N+1 queries total, when 1 or 2 would do.
+The **N+1 query problem** — 1 query for a list, then 1 query *per item*, N+1 total where 2 would do — is covered from first principles (why it scales with your data, the round-trip math, detection) in the backend guide's [N+1 Query Problem](/backend-guide/bsps/07-core-backend-engineering/01-n-plus-one-query-problem) chapter. What's worth showing *here* is what it looks like in Go and the idiomatic `pgx` fix.
 
 ### The bug
 
@@ -388,11 +306,11 @@ func (r *Repo) UsersWithOrders(ctx context.Context) ([]User, error) {
 
 ---
 
-## Part 8 — Pool Exhaustion & Observability
+## Part 7 — Pool Exhaustion & Observability
 
 **Pool exhaustion** is the failure mode all the above prevents: every connection is checked out, and new requests **block** waiting for one, then time out. The symptom is a service that hangs or times out under load while Postgres itself looks *idle* (it's not the bottleneck — your pool is). The causes are always one of:
 
-- **Connection leaks** — unclosed `rows` or un-rolled-back transactions (Parts 5–6).
+- **Connection leaks** — unclosed `rows` or un-rolled-back transactions (Parts 4–5).
 - **Slow queries** — each holds its connection longer (Little's Law: slower queries drain the pool).
 - **Undersized pool** for real concurrency, or an oversized pool that hit the Postgres ceiling.
 - **Downstream slowness** — if a query waits on a lock or a slow disk, connections pile up.

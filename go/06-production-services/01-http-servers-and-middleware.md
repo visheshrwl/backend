@@ -34,11 +34,9 @@ That's it. That is the whole job. The reason this chapter is long is that **ever
 
 ## Part 1 — What Actually Happens When a Request Arrives
 
-Before we write a single line, let's discuss what happens under the hood. This is the part most engineers skip, and it is exactly the part that explains every production setting later. Bear with the detail — it pays off.
+Everything you configure later is a reaction to the request's journey through silicon and the kernel. That journey — DNS, the NIC and ring buffer, the kernel TCP state machine, the TLS handshake, `accept()`, and `epoll` — is told end-to-end, hardware-first, in the backend guide: **[The Client Presses Enter — What Happens in Silicon](/backend-guide/bsps/07-core-backend-engineering/00-how-a-request-behaves-with-hardware)**. Read that for the *why*. What matters *here* is how Go's `net/http` sits on top of it.
 
-### The connection lifecycle, step by step
-
-When a client hits your server, here is the real sequence at the operating-system level:
+### The connection lifecycle, mapped to Go
 
 ```
 CLIENT                          KERNEL (your box)                 GO RUNTIME
@@ -60,24 +58,20 @@ CLIENT                          KERNEL (your box)                 GO RUNTIME
   │  ◄──────── 7. HTTP response ──────│◄──────────────────────────────│    per connection
 ```
 
-Walk through it slowly, because each numbered step maps to something you will configure:
+Three points on this diagram are Go-specific and drive settings later in the chapter:
 
-1. **The handshake (steps 1–3).** Before your Go code sees anything, the kernel completes the TCP three-way handshake. The connection now exists at the OS level, fully established, *whether or not your application has looked at it yet*.
+1. **The accept queue is a backpressure valve you can overflow.** The kernel completes the handshake and parks the connection in the [accept queue](/backend-guide/bsps/07-core-backend-engineering/00-how-a-request-behaves-with-hardware#the-kernels-accept-your-process) *before your Go code sees it*. If your accept loop falls behind arrivals, that fixed-size queue fills and the kernel **refuses new connections** — so "connection refused" under load usually means your server is too slow to `Accept()`, not down.
 
-2. **The accept queue (the backlog).** Completed connections sit in a kernel queue — the "accept queue" — waiting for your application to pick them up. This queue has a fixed size (the *backlog*). Here is the crux: **if your application accepts connections slower than they arrive, this queue fills up, and new connections get dropped or refused by the kernel.** This is a real production failure mode — "connection refused" errors under load often mean your accept loop can't keep up, not that your server is down.
+2. **Every accepted connection is a file descriptor, and Go inherits the OS limit.** `Accept()` returns a socket fd; your process caps out at `ulimit -n` (often 1024 — far too low for production). Exhaust fds and the server stops accepting *anything*, health checks included. A slow client that opens a connection and stalls holds an fd hostage — the mechanism behind slow-loris (Part 2).
 
-3. **`Accept()` and the file descriptor.** Your server calls `Accept()`, which pulls one connection off the queue and hands you a **file descriptor** — an integer that represents the socket. This matters enormously: every open connection consumes a file descriptor, and your process has a **limit** (`ulimit -n`, often 1024 by default — far too low for production). Run out of file descriptors and your server stops accepting *anything*, including health checks. We will come back to this.
-
-4. **A goroutine per connection.** Go's `net/http` then does something beautiful in its simplicity: it launches **one goroutine per connection** (`go c.serve(...)`). Your handler runs on that goroutine. Because goroutines are cheap (Chapter on the scheduler covers why — ~8 KB stacks, user-space scheduling), one process comfortably handles tens of thousands of concurrent connections. A thread-per-connection C or Java-without-Loom server would have collapsed long before.
-
-> **Note — why this is beautiful:** You write plain, blocking, top-to-bottom handler code. Under the hood, when a handler blocks reading the request body, the Go runtime *parks* that goroutine and hands the CPU to another one, registering the socket with the OS event system (`epoll` on Linux). You get the scalability of an async event loop with the readability of synchronous code. You did nothing to earn it. That is the entire design win of Go for backends.
+3. **One goroutine per connection — the reason you write blocking code.** `net/http` launches `go c.serve(...)` per connection. When your handler blocks on I/O, the Go runtime *parks* that goroutine and registers the socket with [`epoll`](/backend-guide/bsps/07-core-backend-engineering/00-how-a-request-behaves-with-hardware#epoll-the-heart-of-scalable-io), freeing the thread for other work — you get event-loop scalability with synchronous, top-to-bottom code. Goroutines are cheap enough (~8 KB stacks, user-space scheduling — see [Goroutines & the Scheduler](/backend-guide/go/03-runtime/01-goroutines-and-the-scheduler)) that one process handles tens of thousands of concurrent connections where a thread-per-connection server would collapse.
 
 ### Why you must care about all this
 
 Two production truths fall directly out of the lifecycle above:
 
-- **Connections cost file descriptors, and file descriptors are finite.** A slow or malicious client that opens a connection and *just sits there* holds a file descriptor hostage. Enough of them and you hit the limit — new connections fail. This is the mechanism behind the "slow loris" attack and behind many an outage during a network blip.
-- **Your handler runs concurrently with every other in-flight request.** Two requests hitting the same shared `map` at the same time is a `fatal error: concurrent map writes` (Chapter 1's memory model — happens-before is not optional). Handler state must be immutable or synchronized.
+- **File descriptors are finite** (bullet 2 above): a slow or malicious client holding connections open is an fd-exhaustion outage waiting to happen — the reason every timeout in Part 3 exists.
+- **Your handler runs concurrently with every other in-flight request.** Two requests hitting the same shared `map` at once is a `fatal error: concurrent map writes` (Chapter 1's memory model — happens-before is not optional). Handler state must be immutable or synchronized.
 
 Hold these two truths. Everything below is a response to them.
 

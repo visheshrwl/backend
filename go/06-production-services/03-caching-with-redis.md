@@ -17,45 +17,18 @@ Your database can serve maybe a few thousand reads per second before it strains.
 
 ## In this chapter you will learn
 
-- **When caching helps** (and the latency/load math that proves it).
-- **Cache-aside** — the default pattern — with real `go-redis` code.
-- Why **every key needs a TTL**, and how to set them.
-- The three failure modes that turn a cache into an outage: **stampede**, **penetration**, **avalanche** — and the code that defends each.
-- Why cache **invalidation** is genuinely hard, and how to handle writes.
-- **Graceful degradation** when Redis itself goes down.
-- The one metric that tells you if your cache is working: **hit rate**.
+- **Cache-aside** in Go — real `go-redis` code, and why you `Del` the key on write instead of overwriting it.
+- The Go-idiomatic defenses for the three cache failure modes: **`singleflight`** (stampede), **negative caching** (penetration), and **TTL jitter** (avalanche).
+- Treating Redis as optional in Go: short timeouts, degrade-to-DB on error, best-effort writes.
+- Wiring **hit-rate** metrics through the read path.
+
+> **Prerequisite — read the first-principles chapter first.** The *why* of caching — the effective-latency math, cache placement patterns, the thundering-herd/stampede model, Bloom filters, invalidation strategy, and hit-rate theory — is language-agnostic and lives in the backend guide: **[Caching Strategy](/backend-guide/bsps/07-core-backend-engineering/03-caching-strategy)**. This chapter assumes it and shows *how you build each of those in Go with `go-redis` and `singleflight`*.
 
 ---
 
-## Part 1 — Why Cache (the Math That Justifies It)
+## Part 1 — The Value, in One Line
 
-Let's make the value concrete instead of hand-wavy. Put a cache in front of your database and the average read latency becomes:
-
-```
-effective_latency = hit_rate × cache_latency + (1 − hit_rate) × db_latency
-```
-
-Plug in real numbers — Redis at ~0.5 ms, Postgres at ~10 ms:
-
-```
-   hit_rate = 0.50 :  0.50×0.5 + 0.50×10  =  5.25 ms
-   hit_rate = 0.80 :  0.80×0.5 + 0.20×10  =  2.40 ms
-   hit_rate = 0.95 :  0.95×0.5 + 0.05×10  =  0.98 ms
-   hit_rate = 0.99 :  0.99×0.5 + 0.01×10  =  0.60 ms
-```
-
-Two lessons jump out. First, **hit rate is everything** — a 50% hit rate barely helps (5.25 ms vs 10 ms), while 95%+ transforms your latency. A cache you don't get a high hit rate from is barely worth the complexity. Second, the *load* reduction is even more dramatic than the latency: at a 95% hit rate, your database sees **1/20th** of the read traffic. That's the difference between one database instance and twenty.
-
-```
-        WITHOUT cache                      WITH cache (95% hit)
-   1000 reads/s ─► [ DATABASE ]       1000 reads/s ─► [ REDIS ]
-                    (all 1000)                          │  950 hits (fast)
-                                                        ▼  50 misses
-                                                   [ DATABASE ]
-                                                    (only 50/s — 20× less)
-```
-
-> **Note — when NOT to cache.** Caching is not free and not always right. Skip it when: the data changes on almost every read (write-heavy, low reuse — you'd cache things that are stale before they're read again); you need **strong consistency** (a cache is eventually consistent by nature — there's always a window where it disagrees with the database); or the data is cheap to compute anyway. Caching trades *staleness and complexity* for *speed and load reduction*. If you're not getting the speed/load win, you're paying the complexity for nothing.
+The backend guide derives it in full ([Caching Strategy → Why It Matters](/backend-guide/bsps/07-core-backend-engineering/03-caching-strategy#why-it-matters-latency-throughput-cost)); the one line to carry into the Go code below: `effective_latency = hit_rate × cache_latency + (1 − hit_rate) × db_latency`, so a **95% hit rate cuts DB read load to ~1/20th** — which is why **hit rate is the number that matters** and why every design choice in this chapter protects it. And the counterweight: don't cache write-heavy data, strongly-consistent data, or data that's cheap to compute — you'd pay the complexity for no win.
 
 ---
 
@@ -218,16 +191,9 @@ You should also configure Redis itself with a `maxmemory` limit and an eviction 
 
 ## Part 5 — Failure Mode 1: Cache Stampede (Thundering Herd)
 
-Now the failure modes — the reason caching is a systems-engineering topic and not a `Set`/`Get` tutorial. This first one is the most common and the most dangerous.
+The failure modes are where caching becomes systems engineering rather than a `Set`/`Get` tutorial. The mechanics of each — why they happen, the load math, the general defenses — are in the backend guide ([Caching Strategy → Thundering Herd and Cache Stampede](/backend-guide/bsps/07-core-backend-engineering/03-caching-strategy#thundering-herd-and-cache-stampede)). Here's the Go implementation of each defense.
 
-**The scenario:** you have a *hot* key — say the homepage feed — served from cache, hit by 5,000 requests per second. The TTL expires. In that instant, **all 5,000 concurrent requests miss the cache at the same time**, and all 5,000 stampede to the database to recompute the same value simultaneously. Your database, which was comfortably serving 50 misses per second, is suddenly hit by 5,000 identical expensive queries at once. It falls over. And because it's down, the cache never gets repopulated, so the *next* wave stampedes too. This is a **cache stampede** (or thundering herd), and it takes down real services regularly — often right after a deploy that flushes the cache.
-
-```
-   TTL expires ──►  5000 requests all MISS at once
-                         │  │  │  │  │  ...
-                         ▼  ▼  ▼  ▼  ▼
-                    [ DATABASE ]  ← 5000 identical queries at once → 💥
-```
+**In one line:** a *hot* key expires and thousands of concurrent requests all miss at once, stampeding the database with the same expensive query simultaneously — which knocks the DB over, so the cache never refills and the next wave stampedes too. The Go fix is to collapse those duplicate loads.
 
 ### The defense: singleflight (collapse duplicate work)
 
@@ -290,7 +256,7 @@ func (c *UserCache) GetUser(ctx context.Context, id int64) (User, error) {
 
 ## Part 6 — Failure Mode 2: Cache Penetration
 
-**The scenario:** requests keep asking for keys that **don't exist**. Cache-aside only caches things it *finds*. So a request for a nonexistent user (`user:999999999`) misses the cache, queries the DB, finds nothing, caches nothing, and returns "not found." Fine once. But if these requests keep coming — a bug, a scraper, or an attacker deliberately requesting random nonexistent IDs — *every one of them* bypasses the cache and hits the database. The cache is "penetrated"; it protects nothing. An attacker who floods you with requests for random IDs can drive your full read load straight through to the database.
+**In one line:** requests keep asking for keys that **don't exist**, so — since cache-aside only caches what it *finds* — every one bypasses the cache and hits the DB (a bug, a scraper, or an attacker spraying random IDs can drive your full read load straight through). The concept and its heavier defenses live in the backend guide ([Caching Strategy → Bloom Filter](/backend-guide/bsps/07-core-backend-engineering/03-caching-strategy#3-bloom-filter-for-negative-caching)); the first-line Go defense is to cache the *absence* too.
 
 ### The defense: cache the negative result
 
