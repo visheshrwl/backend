@@ -124,7 +124,7 @@ It works. It compiles. It responds. And it is **dangerous in production**. Let's
 
 There is also the ignored return value — `http.ListenAndServe` returns an `error`, and the naive version drops it. In production, a server that fails to bind its port should crash loudly, not fail silently.
 
-Arpit would put it this way: this code is optimized for the *demo*, and production is not a demo. At 10 requests per second on your laptop, nothing here matters. At 10,000 requests per second with real clients on real flaky networks, every one of these omissions becomes an incident. So let's build the real thing.
+Put plainly: this code is optimized for the *demo*, and production is not a demo. At 10 requests per second on your laptop, nothing here matters. At 10,000 requests per second with real clients on real flaky networks, every one of these omissions becomes an incident. So let's build the real thing.
 
 ---
 
@@ -159,7 +159,7 @@ func newServer(handler http.Handler) *http.Server {
 }
 ```
 
-Now, Hussein-style, let's enumerate what each one *actually protects* — because a setting you don't understand is a setting you'll delete the first time it's inconvenient.
+Now let's enumerate what each one *actually protects* — because a setting you don't understand is a setting you'll delete the first time it's inconvenient.
 
 | Setting | What it bounds | The attack / failure it closes |
 |---|---|---|
@@ -494,7 +494,7 @@ func Timeout(d time.Duration) Middleware {
 
 ## Part 6 — Health and Readiness Endpoints
 
-Your orchestrator needs to ask two different questions, and conflating them causes outages. Let's be precise (this is a classic Arpit "people get this exactly backwards" topic).
+Your orchestrator needs to ask two different questions, and conflating them causes outages. Let's be precise — this is one people get exactly backwards.
 
 - **Liveness (`/healthz`): "Are you alive, or should I restart you?"** Answer this **cheaply and locally** — do *not* check the database here. Why? Because if your database has a blip and your liveness probe checks the DB, Kubernetes will conclude your (perfectly healthy) pods are dead and **restart all of them at once** — turning a brief DB hiccup into a full outage. Liveness must only fail when the *process itself* is unrecoverable.
 
@@ -678,6 +678,6 @@ A service ran happily for months on `http.ListenAndServe` with default timeouts.
 
 ---
 
-Next chapter → *Chapter 3: Database Connections & Pooling* — the `pgxpool`, why connections are your scarcest resource, and how a pool turns "one connection per request" from a bottleneck into throughput. (Coming next — say **go ahead**.)
+Next chapter → [Database Connections & Pooling](/backend-guide/go/06-production-services/02-database-connections-and-pooling)
 
 Back to → [The Go Engineering Handbook](/backend-guide/go/README)
